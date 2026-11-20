@@ -8,8 +8,8 @@ import java.io.File;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedList;
 import java.util.List;
 
 import static java.util.Objects.requireNonNull;
@@ -108,7 +108,7 @@ public class RelocationHelper {
         requireNonNull(relocations, "relocations");
 
         try {
-            List<Object> rules = new LinkedList<>();
+            List<Object> rules = new ArrayList<>(relocations.size());
             for (Relocation relocation : relocations) {
                 rules.add(relocationConstructor.newInstance(
                     relocation.getPattern(),

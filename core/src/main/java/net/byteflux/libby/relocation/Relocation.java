@@ -1,8 +1,11 @@
 package net.byteflux.libby.relocation;
 
+import org.jspecify.annotations.Nullable;
+
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
+import java.util.List;
+import java.util.Objects;
 
 import static java.util.Objects.requireNonNull;
 
@@ -10,6 +13,10 @@ import static java.util.Objects.requireNonNull;
  * Relocations are used to describe a search and replace pattern for renaming
  * packages in a library jar for the purpose of preventing namespace conflicts
  * with other plugins that bundle their own version of the same library.
+ * <p>
+ * Relocations are immutable. As with {@link net.byteflux.libby.Library}
+ * group IDs, {@code {}} may be used in place of {@code .} in the patterns to
+ * stop build-time shading tools from rewriting the string literals.
  */
 public class Relocation {
     /**
@@ -37,14 +44,18 @@ public class Relocation {
      *
      * @param pattern          search pattern
      * @param relocatedPattern replacement pattern
-     * @param includes         classes and resources to include
-     * @param excludes         classes and resources to exclude
+     * @param includes         classes and resources to include or null
+     * @param excludes         classes and resources to exclude or null
      */
-    public Relocation(String pattern, String relocatedPattern, Collection<String> includes, Collection<String> excludes) {
+    public Relocation(@Nullable String pattern,
+                      @Nullable String relocatedPattern,
+                      @Nullable Collection<String> includes,
+                      @Nullable Collection<String> excludes) {
+
         this.pattern = requireNonNull(pattern, "pattern").replace("{}", ".");
         this.relocatedPattern = requireNonNull(relocatedPattern, "relocatedPattern").replace("{}", ".");
-        this.includes = includes != null ? Collections.unmodifiableList(new LinkedList<>(includes)) : Collections.emptyList();
-        this.excludes = excludes != null ? Collections.unmodifiableList(new LinkedList<>(excludes)) : Collections.emptyList();
+        this.includes = includes != null ? List.copyOf(includes) : List.of();
+        this.excludes = excludes != null ? List.copyOf(excludes) : List.of();
     }
 
     /**
@@ -94,6 +105,49 @@ public class Relocation {
     }
 
     /**
+     * Compares this relocation with another object. Two relocations are equal
+     * when their patterns, includes and excludes are equal.
+     *
+     * @param o the object to compare with
+     * @return true if the object is an equal relocation
+     */
+    @Override
+    public boolean equals(@Nullable Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof Relocation)) {
+            return false;
+        }
+
+        Relocation other = (Relocation) o;
+        return pattern.equals(other.pattern)
+            && relocatedPattern.equals(other.relocatedPattern)
+            && includes.equals(other.includes)
+            && excludes.equals(other.excludes);
+    }
+
+    /**
+     * Gets a hash code consistent with {@link #equals(Object)}.
+     *
+     * @return hash code
+     */
+    @Override
+    public int hashCode() {
+        return Objects.hash(pattern, relocatedPattern, includes, excludes);
+    }
+
+    /**
+     * Gets a human-readable string representation of this relocation.
+     *
+     * @return string representation
+     */
+    @Override
+    public String toString() {
+        return pattern + " -> " + relocatedPattern + " (includes=" + includes + ", excludes=" + excludes + ')';
+    }
+
+    /**
      * Creates a new relocation builder.
      *
      * @return new relocation builder
@@ -111,22 +165,22 @@ public class Relocation {
         /**
          * Search pattern
          */
-        private String pattern;
+        private @Nullable String pattern;
 
         /**
          * Replacement pattern
          */
-        private String relocatedPattern;
+        private @Nullable String relocatedPattern;
 
         /**
          * Classes and resources to include
          */
-        private final Collection<String> includes = new LinkedList<>();
+        private final List<String> includes = new ArrayList<>();
 
         /**
          * Classes and resources to exclude
          */
-        private final Collection<String> excludes = new LinkedList<>();
+        private final List<String> excludes = new ArrayList<>();
 
         /**
          * Sets the search pattern.

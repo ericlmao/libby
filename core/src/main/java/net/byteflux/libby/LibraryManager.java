@@ -23,10 +23,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static java.util.Objects.requireNonNull;
 
@@ -60,7 +60,7 @@ public abstract class LibraryManager {
     /**
      * Maven repositories used to resolve artifacts
      */
-    private final List<String> repositories = new LinkedList<>();
+    private final List<String> repositories = new CopyOnWriteArrayList<>();
 
     /**
      * Lazily-initialized relocation helper that uses reflection to call into
@@ -76,7 +76,7 @@ public abstract class LibraryManager {
      */
     protected LibraryManager(LogAdapter logAdapter, Path dataDirectory) {
         logger = new Logger(requireNonNull(logAdapter, "logAdapter"));
-        saveDirectory = requireNonNull(dataDirectory, "dataDirectory").toAbsolutePath().resolve("lib");
+        saveDirectory = requireNonNull(dataDirectory, "dataDirectory").toAbsolutePath().normalize().resolve("lib");
     }
 
     /**
@@ -120,12 +120,7 @@ public abstract class LibraryManager {
      * @return current repositories
      */
     public Collection<String> getRepositories() {
-        List<String> urls;
-        synchronized (repositories) {
-            urls = new LinkedList<>(repositories);
-        }
-
-        return Collections.unmodifiableList(urls);
+        return List.copyOf(repositories);
     }
 
     /**
@@ -138,9 +133,7 @@ public abstract class LibraryManager {
      */
     public void addRepository(String url) {
         String repo = requireNonNull(url, "url").endsWith("/") ? url : url + '/';
-        synchronized (repositories) {
-            repositories.add(repo);
-        }
+        repositories.add(repo);
     }
 
     /**
@@ -186,12 +179,12 @@ public abstract class LibraryManager {
      * @return download URLs
      */
     public Collection<String> resolveLibrary(Library library) {
-        List<String> urls = new LinkedList<>(requireNonNull(library, "library").getUrls());
+        List<String> urls = new ArrayList<>(requireNonNull(library, "library").getUrls());
         for (String repository : getRepositories()) {
             urls.add(repository + library.getPath());
         }
 
-        return Collections.unmodifiableList(urls);
+        return List.copyOf(urls);
     }
 
     /**
@@ -265,7 +258,7 @@ public abstract class LibraryManager {
      * @see #loadLibrary(Library)
      */
     public Path downloadLibrary(Library library) {
-        Path file = saveDirectory.resolve(requireNonNull(library, "library").getPath());
+        Path file = resolveSaveFile(requireNonNull(library, "library").getPath());
         if (Files.exists(file)) {
             return file;
         }
@@ -340,7 +333,7 @@ public abstract class LibraryManager {
         requireNonNull(out, "out");
         requireNonNull(relocations, "relocations");
 
-        Path file = saveDirectory.resolve(out);
+        Path file = resolveSaveFile(out);
         if (Files.exists(file)) {
             return file;
         }
@@ -369,6 +362,23 @@ public abstract class LibraryManager {
             } catch (IOException ignored) {
             }
         }
+    }
+
+    /**
+     * Resolves a path relative to the save directory and makes sure it doesn't
+     * escape it.
+     *
+     * @param relativePath path relative to the save directory
+     * @return the normalized absolute path
+     * @throws IllegalArgumentException if the path resolves outside the save directory
+     */
+    private Path resolveSaveFile(String relativePath) {
+        Path file = saveDirectory.resolve(relativePath).normalize();
+        if (!file.startsWith(saveDirectory) || file.equals(saveDirectory)) {
+            throw new IllegalArgumentException("Library path '" + relativePath + "' escapes the save directory " + saveDirectory);
+        }
+
+        return file;
     }
 
     /**

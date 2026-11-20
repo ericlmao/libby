@@ -17,7 +17,7 @@ public class Logger {
     /**
      * Log level controlling which messages are logged
      */
-    private LogLevel level = LogLevel.INFO;
+    private volatile LogLevel level = LogLevel.INFO;
 
     /**
      * Creates a new logger with the provided adapter.

@@ -1,11 +1,15 @@
 package net.byteflux.libby;
 
 import net.byteflux.libby.relocation.Relocation;
+import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
+import java.util.List;
+import java.util.Objects;
+import java.util.regex.Pattern;
 
 import static java.util.Objects.requireNonNull;
 
@@ -13,9 +17,26 @@ import static java.util.Objects.requireNonNull;
  * An immutable representation of a Maven artifact that can be downloaded,
  * relocated and then loaded into a plugin's classpath at runtime.
  *
+ * <p>
+ * Coordinates are validated when the library is built: the group ID, artifact
+ * ID, version and classifier may only contain {@code [A-Za-z0-9_.+-]}, must
+ * not be empty, must not start or end with {@code .} and must not contain
+ * {@code ..}. This guarantees that the derived {@link #getPath() path} always
+ * stays inside the library manager's save directory.
+ *
  * @see #builder()
  */
 public class Library {
+    /**
+     * Characters allowed in Maven coordinates
+     */
+    private static final Pattern COORDINATE = Pattern.compile("[A-Za-z0-9_.+\\-]+");
+
+    /**
+     * Length in bytes of a SHA-256 checksum
+     */
+    private static final int SHA_256_LENGTH = 32;
+
     /**
      * Direct download URLs for this library
      */
@@ -39,12 +60,12 @@ public class Library {
     /**
      * Artifact classifier
      */
-    private final String classifier;
+    private final @Nullable String classifier;
 
     /**
      * Binary SHA-256 checksum for this library's jar file
      */
-    private final byte[] checksum;
+    private final byte @Nullable [] checksum;
 
     /**
      * Jar relocations to apply
@@ -59,7 +80,7 @@ public class Library {
     /**
      * Relative path to this library's relocated jar
      */
-    private final String relocatedPath;
+    private final @Nullable String relocatedPath;
 
     /**
      * Creates a new library.
@@ -70,23 +91,29 @@ public class Library {
      * @param version     artifact version
      * @param classifier  artifact classifier or null
      * @param checksum    binary SHA-256 checksum or null
-     * @param relocations jar relocations or null
+     * @param relocations jar relocations
+     * @throws IllegalArgumentException if a coordinate or the checksum is invalid
      */
     private Library(Collection<String> urls,
-                    String groupId,
-                    String artifactId,
-                    String version,
-                    String classifier,
-                    byte[] checksum,
+                    @Nullable String groupId,
+                    @Nullable String artifactId,
+                    @Nullable String version,
+                    @Nullable String classifier,
+                    byte @Nullable [] checksum,
                     Collection<Relocation> relocations) {
 
-        this.urls = urls != null ? Collections.unmodifiableList(new LinkedList<>(urls)) : Collections.emptyList();
-        this.groupId = requireNonNull(groupId, "groupId").replace("{}", ".");
-        this.artifactId = requireNonNull(artifactId, "artifactId");
-        this.version = requireNonNull(version, "version");
-        this.classifier = classifier;
-        this.checksum = checksum;
-        this.relocations = relocations != null ? Collections.unmodifiableList(new LinkedList<>(relocations)) : Collections.emptyList();
+        this.urls = List.copyOf(urls);
+        // "{}" is accepted in place of "." so that build-time shading/relocation tools
+        // don't rewrite group ID string literals in the plugin's own code.
+        this.groupId = requireCoordinate("groupId", requireNonNull(groupId, "groupId").replace("{}", "."));
+        this.artifactId = requireCoordinate("artifactId", requireNonNull(artifactId, "artifactId"));
+        this.version = requireCoordinate("version", requireNonNull(version, "version"));
+        this.classifier = classifier != null ? requireCoordinate("classifier", classifier) : null;
+        if (checksum != null && checksum.length != SHA_256_LENGTH) {
+            throw new IllegalArgumentException("checksum must be a " + SHA_256_LENGTH + "-byte SHA-256 digest, got " + checksum.length + " bytes");
+        }
+        this.checksum = checksum != null ? checksum.clone() : null;
+        this.relocations = List.copyOf(relocations);
 
         String path = this.groupId.replace('.', '/') + '/' + artifactId + '/' + version + '/' + artifactId + '-' + version;
         if (hasClassifier()) {
@@ -138,7 +165,7 @@ public class Library {
      *
      * @return artifact classifier or null
      */
-    public String getClassifier() {
+    public @Nullable String getClassifier() {
         return classifier;
     }
 
@@ -154,10 +181,10 @@ public class Library {
     /**
      * Gets the binary SHA-256 checksum of this library's jar file.
      *
-     * @return checksum or null
+     * @return a copy of the checksum or null
      */
-    public byte[] getChecksum() {
-        return checksum;
+    public byte @Nullable [] getChecksum() {
+        return checksum != null ? checksum.clone() : null;
     }
 
     /**
@@ -201,7 +228,7 @@ public class Library {
      *
      * @return path to relocated artifact or null if has no relocations
      */
-    public String getRelocatedPath() {
+    public @Nullable String getRelocatedPath() {
         return relocatedPath;
     }
 
@@ -218,6 +245,68 @@ public class Library {
         }
 
         return name;
+    }
+
+    /**
+     * Compares this library with another object. Two libraries are equal when
+     * their coordinates, checksum, direct download URLs and relocations are
+     * equal.
+     *
+     * @param o the object to compare with
+     * @return true if the object is an equal library
+     */
+    @Override
+    public boolean equals(@Nullable Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof Library)) {
+            return false;
+        }
+
+        Library other = (Library) o;
+        return groupId.equals(other.groupId)
+            && artifactId.equals(other.artifactId)
+            && version.equals(other.version)
+            && Objects.equals(classifier, other.classifier)
+            && Arrays.equals(checksum, other.checksum)
+            && urls.equals(other.urls)
+            && relocations.equals(other.relocations);
+    }
+
+    /**
+     * Gets a hash code consistent with {@link #equals(Object)}.
+     *
+     * @return hash code
+     */
+    @Override
+    public int hashCode() {
+        return 31 * Objects.hash(groupId, artifactId, version, classifier, urls, relocations) + Arrays.hashCode(checksum);
+    }
+
+    /**
+     * Validates a Maven coordinate.
+     *
+     * @param name  coordinate name used in error messages
+     * @param value coordinate value
+     * @return the value
+     * @throws IllegalArgumentException if the value is not a safe coordinate
+     */
+    private static String requireCoordinate(String name, String value) {
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(name + " must not be empty");
+        }
+        if (!COORDINATE.matcher(value).matches()) {
+            throw new IllegalArgumentException(name + " '" + value + "' may only contain letters, digits and _ . + -");
+        }
+        if (value.startsWith(".") || value.endsWith(".")) {
+            throw new IllegalArgumentException(name + " '" + value + "' must not start or end with '.'");
+        }
+        if (value.contains("..")) {
+            throw new IllegalArgumentException(name + " '" + value + "' must not contain '..'");
+        }
+
+        return value;
     }
 
     /**
@@ -238,37 +327,37 @@ public class Library {
         /**
          * Direct download URLs for this library
          */
-        private final Collection<String> urls = new LinkedList<>();
+        private final List<String> urls = new ArrayList<>();
 
         /**
          * Maven group ID
          */
-        private String groupId;
+        private @Nullable String groupId;
 
         /**
          * Maven artifact ID
          */
-        private String artifactId;
+        private @Nullable String artifactId;
 
         /**
          * Artifact version
          */
-        private String version;
+        private @Nullable String version;
 
         /**
          * Artifact classifier
          */
-        private String classifier;
+        private @Nullable String classifier;
 
         /**
          * Binary SHA-256 checksum for this library's jar file
          */
-        private byte[] checksum;
+        private byte @Nullable [] checksum;
 
         /**
          * Jar relocations to apply
          */
-        private final Collection<Relocation> relocations = new LinkedList<>();
+        private final List<Relocation> relocations = new ArrayList<>();
 
         /**
          * Adds a direct download URL for this library.
@@ -326,13 +415,14 @@ public class Library {
         }
 
         /**
-         * Sets the binary SHA-256 checksum for this library.
+         * Sets the binary SHA-256 checksum for this library. The array is
+         * copied, later changes to it have no effect.
          *
          * @param checksum binary SHA-256 checksum
          * @return this builder
          */
         public Builder checksum(byte[] checksum) {
-            this.checksum = requireNonNull(checksum, "checksum");
+            this.checksum = requireNonNull(checksum, "checksum").clone();
             return this;
         }
 
@@ -341,6 +431,7 @@ public class Library {
          *
          * @param checksum Base64-encoded SHA-256 checksum
          * @return this builder
+         * @throws IllegalArgumentException if the checksum is not valid Base64
          */
         public Builder checksum(String checksum) {
             return checksum(Base64.getDecoder().decode(requireNonNull(checksum, "checksum")));
@@ -372,6 +463,8 @@ public class Library {
          * Creates a new library using this builder's configuration.
          *
          * @return new library
+         * @throws NullPointerException     if the group ID, artifact ID or version is missing
+         * @throws IllegalArgumentException if a coordinate or the checksum is invalid
          */
         public Library build() {
             return new Library(urls, groupId, artifactId, version, classifier, checksum, relocations);
