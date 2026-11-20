@@ -330,7 +330,7 @@ final class ModelBuilder {
             Dependency dependency = interpolate(raw, interpolator);
             Dependency managed = management.get(dependency.managementKey());
             if (managed != null) {
-                dependency = applyManagement(dependency, managed, false);
+                dependency = applyManagement(dependency, managed);
             }
             dependencies.add(dependency);
         }
@@ -351,25 +351,16 @@ final class ModelBuilder {
     }
 
     /**
-     * Applies a dependency management entry to a dependency.
+     * Applies a dependency management entry to a dependency, filling in
+     * undeclared values only.
      *
      * @param dependency the dependency
      * @param managed    the dependency management entry
-     * @param override   true to override the version and scope (dependency
-     *                   management of the requested library applied to a
-     *                   transitive dependency), false to only fill in
-     *                   undeclared values
      * @return the managed dependency
      */
-    static Dependency applyManagement(Dependency dependency, Dependency managed, boolean override) {
-        String version = override && managed.version() != null ? managed.version() : dependency.version();
-        if (version == null) {
-            version = managed.version();
-        }
-        String scope = override && managed.scope() != null ? managed.scope() : dependency.scope();
-        if (scope == null) {
-            scope = managed.scope();
-        }
+    private static Dependency applyManagement(Dependency dependency, Dependency managed) {
+        String version = dependency.version() != null ? dependency.version() : managed.version();
+        String scope = dependency.scope() != null ? dependency.scope() : managed.scope();
         String optional = dependency.optional() != null ? dependency.optional() : managed.optional();
 
         Set<ExcludedDependency> exclusions = new LinkedHashSet<>(dependency.exclusions());

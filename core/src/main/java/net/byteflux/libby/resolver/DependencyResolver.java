@@ -37,9 +37,12 @@ import static java.util.Objects.requireNonNull;
  *     variables and system properties are not supported;</li>
  *     <li>dependency management, including BOMs imported with
  *     {@code <scope>import</scope>} and {@code <type>pom</type>}, applied to
- *     undeclared versions, scopes, optional flags and exclusions. The
- *     requested library's dependency management also overrides the versions
- *     and scopes of its transitive dependencies;</li>
+ *     undeclared versions, scopes, optional flags and exclusions of each
+ *     POM's own dependencies. The requested library's dependency management
+ *     only supplies versions that transitive dependencies leave undeclared;
+ *     it never overrides a declared version or scope, so the resolved tree
+ *     matches what Gradle and Maven put on the compile classpath of a project
+ *     that depends on the library;</li>
  *     <li>{@code compile} and {@code runtime} dependencies, with Maven's
  *     transitive scope rules. {@code test}, {@code provided}, {@code system}
  *     and optional dependencies are skipped, as are dependencies whose type
@@ -152,10 +155,14 @@ public final class DependencyResolver {
             EffectiveModel model = requireNonNull(node.model, "model");
             for (Dependency declared : model.dependencies()) {
                 Dependency dependency = declared;
-                if (node != rootNode) {
+                if (node != rootNode && dependency.version() == null) {
+                    // Like Gradle and Maven when compiling against the library, the
+                    // root's dependency management never overrides a version or scope
+                    // declared (or managed) deeper in the tree; it only fills in a
+                    // version that would otherwise be missing.
                     Dependency managed = rootManagement.get(dependency.managementKey());
-                    if (managed != null) {
-                        dependency = ModelBuilder.applyManagement(dependency, managed, true);
+                    if (managed != null && managed.version() != null) {
+                        dependency = dependency.withVersion(managed.version());
                     }
                 }
 

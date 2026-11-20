@@ -83,6 +83,16 @@ record EffectiveModel(String groupId,
         }
 
         /**
+         * Gets a copy of this dependency with another version.
+         *
+         * @param version the version
+         * @return the copy
+         */
+        Dependency withVersion(String version) {
+            return new Dependency(groupId, artifactId, version, type, classifier, scope, optional, exclusions);
+        }
+
+        /**
          * Gets whether this dependency is declared optional.
          *
          * @return true if optional

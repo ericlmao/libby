@@ -336,7 +336,7 @@ the POM features plugins commonly depend on:
 |---------------------------------------------------------------------------------------------------|
 | Parent POMs (`<relativePath>` is ignored) with inheritance of group ID, version, properties, dependency management and dependencies |
 | `${project.groupId/artifactId/version}`, `${project.parent.*}`, the `pom.*` and `parent.*` aliases and `<properties>`, nested up to 16 levels |
-| `<dependencyManagement>`, including BOMs imported with `<scope>import</scope>`; the root library's management also overrides transitive versions |
+| `<dependencyManagement>`, including BOMs imported with `<scope>import</scope>`, applied to each POM's own dependencies; the root library's management only fills in versions that transitive dependencies leave out and never overrides a declared version or scope, matching what Gradle and Maven compile your plugin against |
 | `compile` and `runtime` scopes with Maven's transitive scope rules; `test`, `provided`, `system` and optional dependencies are skipped |
 | Types `jar`, `bundle` and `pom` (POM-only aggregators such as `opus-java` contribute their dependencies); other types such as `test-jar` or `aar` are skipped |
 | Classifiers, `<exclusions>` with `*` wildcards (inherited down the tree), nearest-wins version mediation, dependency cycles |

@@ -362,13 +362,28 @@ public class TransitiveResolutionTest {
     }
 
     @Test
-    public void rootDependencyManagementOverridesTransitiveVersions() {
-        repo.artifact("com.example:root:1.0", management(dependency("com.example:c:3.0"))
+    public void rootDependencyManagementDoesNotOverrideTransitiveVersionsOrScopes() {
+        repo.artifact("com.example:root:1.0", management(dependency("com.example:c:3.0"), dependency("com.example:d:3.0", scope("test")))
                 + dependencies(dependency("com.example:a:1.0")))
-            .artifact("com.example:a:1.0", management(dependency("com.example:c:2.0")) + dependencies(dependency("com.example:c:1.0")))
-            .artifact("com.example:c:3.0");
+            .artifact("com.example:a:1.0", management(dependency("com.example:c:2.0"))
+                + dependencies(dependency("com.example:c:1.0"), dependency("com.example:d:1.0")))
+            .artifact("com.example:c:1.0")
+            .artifact("com.example:d:1.0");
 
-        assertEquals(List.of("com.example:c:3.0", "com.example:a:1.0"), resolve("com.example:root:1.0"));
+        assertEquals(List.of("com.example:c:1.0", "com.example:d:1.0", "com.example:a:1.0"), resolve("com.example:root:1.0"));
+    }
+
+    @Test
+    public void rootDependencyManagementFillsMissingTransitiveVersions() {
+        repo.artifact("com.example:root:1.0", management(dependency("com.example:c:3.0"), dependency("com.example:d:3.0"))
+                + dependencies(dependency("com.example:a:1.0")))
+            .artifact("com.example:a:1.0", management(dependency("com.example:d:2.0"))
+                + dependencies(dependency("com.example:c"), dependency("com.example:d")))
+            .artifact("com.example:c:3.0")
+            .artifact("com.example:d:2.0");
+
+        // The transitive POM's own management comes first, the root's only fills gaps.
+        assertEquals(List.of("com.example:c:3.0", "com.example:d:2.0", "com.example:a:1.0"), resolve("com.example:root:1.0"));
     }
 
     @Test
