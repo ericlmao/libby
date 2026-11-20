@@ -116,7 +116,8 @@ public abstract class LibraryManager {
 
     /**
      * Libraries loaded into the plugin's classpath by
-     * {@code groupId:artifactId[:classifier]}; the first loaded version wins
+     * {@code groupId:artifactId[:classifier]} and relocation fingerprint; the
+     * first loaded version wins
      */
     private final ConcurrentMap<String, Library> loadedLibraries = new ConcurrentHashMap<>();
 
@@ -684,10 +685,15 @@ public abstract class LibraryManager {
      * {@link #resolveTransitiveLibraries(Library)} and loaded first.
      * <p>
      * Each jar is added to the classpath only once. The first version of a
-     * library ({@code groupId:artifactId[:classifier]}) loaded by this manager
-     * wins: loading a different version later logs a warning and is skipped.
-     * This also applies to transitive dependencies, so loading a library
-     * explicitly before the library that depends on it pins its version.
+     * library ({@code groupId:artifactId[:classifier]} with the same
+     * relocation rules) loaded by this manager wins: loading a different
+     * version later logs a warning and is skipped. This also applies to
+     * transitive dependencies, which inherit the relocation rules of the
+     * library that depends on them, so loading a library explicitly with the
+     * same relocation rules before the library that depends on it pins its
+     * version. The same library with different relocation rules is a
+     * separate library, because code relocated with those rules refers to its
+     * classes under different package names.
      *
      * @param library the library to load
      * @throws LibraryDownloadException      if a library couldn't be downloaded
@@ -760,10 +766,12 @@ public abstract class LibraryManager {
      * @param library the library to load
      */
     private void loadIntoClasspath(Library library) {
-        String key = coordinates(library);
+        String fingerprint = library.getRelocationFingerprint();
+        String key = fingerprint != null ? coordinates(library) + '@' + fingerprint : coordinates(library);
         Library existing = loadedLibraries.putIfAbsent(key, library);
         if (existing != null && !existing.getVersion().equals(library.getVersion())) {
-            logger.warn("Not loading " + library + " because version " + existing.getVersion() + " of " + key + " is already loaded");
+            String name = fingerprint != null ? coordinates(library) + " (relocated " + fingerprint + ')' : coordinates(library);
+            logger.warn("Not loading " + library + " because version " + existing.getVersion() + " of " + name + " is already loaded");
             return;
         }
 
@@ -812,7 +820,7 @@ public abstract class LibraryManager {
     }
 
     /**
-     * Gets the version-less coordinates identifying a library.
+     * Gets the version-less coordinates of a library.
      *
      * @param library the library
      * @return {@code groupId:artifactId[:classifier]}

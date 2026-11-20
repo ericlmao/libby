@@ -325,8 +325,13 @@ libraryManager.loadLibrary(Library.builder()
   `resolveTransitiveLibraries(Library)` returns the resolved libraries in load order
   (dependencies first), without the root, whether or not the library enables resolution.
 - **Explicit libraries win**: libby keeps the first version of each
-  `groupId:artifactId[:classifier]` it loads. Loading a library explicitly before the one
-  that depends on it pins its version; the transitive version is skipped with a warning.
+  `groupId:artifactId[:classifier]` it loads with the same relocation rules. Loading a
+  library explicitly before the one that depends on it pins its version; the transitive
+  version is skipped with a warning. Because transitive dependencies inherit the root's
+  relocations, the pinned library must use **exactly the same relocation rules** as the
+  root library, otherwise both versions are loaded side by side under different package
+  names. The same library loaded by two roots with different relocations is likewise
+  loaded once per relocation, since each root's relocated code refers to its own copy.
 - POMs, parent POMs and BOMs are downloaded from the manager's repositories (never from a
   library's direct URLs) and cached in the library directory.
 
@@ -500,7 +505,7 @@ adapters.
 - **Validated coordinates.** Invalid group IDs, artifact IDs, versions, classifiers or
   checksums now throw an `IllegalArgumentException` when the library is built.
 - **One version per library.** Loading a different version of an already loaded
-  `groupId:artifactId[:classifier]` is skipped with a warning.
+  `groupId:artifactId[:classifier]` with the same relocation rules is skipped with a warning.
 
 ## Building from source
 

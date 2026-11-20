@@ -145,6 +145,56 @@ public class LibraryManagerRelocationTest {
     }
 
     @Test
+    public void transitiveVersionsAreTrackedPerRelocation() throws IOException {
+        publish("com.example:d:1.0", "");
+        publish("com.example:d:2.0", "");
+        publish("com.example:a:1.0", "<dependencies><dependency><groupId>com.example</groupId><artifactId>d</artifactId><version>1.0</version></dependency></dependencies>");
+        publish("com.example:b:1.0", "<dependencies><dependency><groupId>com.example</groupId><artifactId>d</artifactId><version>2.0</version></dependency></dependencies>");
+        publish("com.example:c:1.0", "<dependencies><dependency><groupId>com.example</groupId><artifactId>d</artifactId><version>2.0</version></dependency></dependencies>");
+
+        Library a = Library.builder().groupId("com.example").artifactId("a").version("1.0")
+            .relocate("com{}example", "ra").resolveTransitiveDependencies(true).build();
+        Library b = Library.builder().groupId("com.example").artifactId("b").version("1.0")
+            .relocate("com{}example", "rb").resolveTransitiveDependencies(true).build();
+        Library c = Library.builder().groupId("com.example").artifactId("c").version("1.0")
+            .relocate("com{}example", "ra").resolveTransitiveDependencies(true).build();
+        Library dForA = Library.builder().groupId("com.example").artifactId("d").version("1.0").relocate("com{}example", "ra").build();
+        Library dForB = Library.builder().groupId("com.example").artifactId("d").version("2.0").relocate("com{}example", "rb").build();
+
+        manager.loadLibrary(a);
+        manager.loadLibrary(b);
+
+        // b's code refers to rb.* classes, so its own relocated d 2.0 must be loaded.
+        Path save = manager.saveDirectory();
+        assertEquals(List.of(
+            save.resolve(dForA.getRelocatedPath()),
+            save.resolve(a.getRelocatedPath()),
+            save.resolve(dForB.getRelocatedPath()),
+            save.resolve(b.getRelocatedPath())
+        ), manager.classpath());
+        assertEquals(0, manager.log().count(LogLevel.WARN, "Not loading"));
+
+        // With the same relocations, the first loaded version still wins.
+        manager.loadLibrary(c);
+        assertEquals(1, manager.log().count(LogLevel.WARN,
+            "Not loading com.example:d:2.0 because version 1.0 of com.example:d (relocated " + dForA.getRelocationFingerprint() + ") is already loaded"));
+        assertEquals(5, manager.classpath().size());
+    }
+
+    /**
+     * Publishes a jar and a POM with the given body to the library repository.
+     */
+    private void publish(String coordinates, String body) throws IOException {
+        String[] parts = coordinates.split(":");
+        Path directory = libraryRepository.resolve(parts[0].replace('.', '/') + '/' + parts[1] + '/' + parts[2]);
+        Files.createDirectories(directory);
+        String name = parts[1] + '-' + parts[2];
+        Files.write(directory.resolve(name + ".jar"), TestJars.simpleJar(coordinates));
+        Files.writeString(directory.resolve(name + ".pom"), "<project><groupId>" + parts[0] + "</groupId><artifactId>" + parts[1]
+            + "</artifactId><version>" + parts[2] + "</version>" + body + "</project>");
+    }
+
+    @Test
     public void changingRulesProducesNewJar() throws IOException {
         Library first = greeter().relocate("com{}example{}lib", "shaded{}greeter").build();
         Library second = greeter().relocate("com{}example{}lib", "other{}greeter").build();
