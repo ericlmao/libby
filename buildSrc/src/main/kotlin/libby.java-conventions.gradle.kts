@@ -1,6 +1,9 @@
+import com.vanniktech.maven.publish.DeploymentValidation
+
 plugins {
     `java-library`
     `maven-publish`
+    id("com.vanniktech.maven.publish.base")
 }
 
 val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
@@ -61,6 +64,14 @@ publishing {
                 name = project.name
                 description = provider { project.description }
                 url = "https://github.com/ericlmao/libby"
+                developers {
+                    developer {
+                        id = "ericlmao"
+                        name = "Eric"
+                        organization = "Moonrise Studios"
+                        organizationUrl = "https://moonrise.gg"
+                    }
+                }
                 licenses {
                     license {
                         name = "MIT License"
@@ -95,5 +106,17 @@ publishing {
                 }
             }
         }
+    }
+}
+
+// Maven Central: `./gradlew -PcentralRelease publishToMavenCentral` signs every publication and
+// uploads them to the Central Portal. It needs the Gradle properties mavenCentralUsername,
+// mavenCentralPassword (a Central Portal user token), signingInMemoryKey and
+// signingInMemoryKeyPassword, usually passed as ORG_GRADLE_PROJECT_* environment variables.
+if (providers.gradleProperty("centralRelease").isPresent) {
+    mavenPublishing {
+        // Return once Central has validated the deployment; Central then publishes it on its own.
+        publishToMavenCentral(automaticRelease = true, validateDeployment = DeploymentValidation.VALIDATED)
+        signAllPublications()
     }
 }

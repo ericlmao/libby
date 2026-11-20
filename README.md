@@ -31,7 +31,7 @@ who self-host their plugins on servers with limited bandwidth.
 - [Classpath injection on Java 16+](#classpath-injection-on-java-16)
 - [Configuration](#configuration)
 - [Fabric and other platforms](#fabric-and-other-platforms)
-- [Migrating from 0.0.x / 1.x](#migrating-from-00x--1x)
+- [Migrating from Byteflux libby](#migrating-from-byteflux-libby-00x--1x)
 - [Building from source](#building-from-source)
 
 ## Requirements and platforms
@@ -51,10 +51,8 @@ Libby requires **Java 17 or newer** at runtime.
 
 ## Installation
 
-The coordinates are `net.byteflux:libby-<platform>:2.0.0-SNAPSHOT`, for example
-`net.byteflux:libby-bukkit:2.0.0-SNAPSHOT`. Version 2.0.0 isn't published to a public
-repository yet: build it from source and install it with `./gradlew publishToMavenLocal`
-(see [Building from source](#building-from-source)), or publish it to your own repository.
+Libby is published to Maven Central as `gg.moonrise.libby:libby-<platform>:1.0.0`, for example
+`gg.moonrise.libby:libby-bukkit:1.0.0`.
 
 Libby is meant to be **shaded into your plugin and relocated**, so that it never clashes
 with another plugin's copy of libby.
@@ -68,16 +66,15 @@ plugins {
 }
 
 repositories {
-    mavenLocal()
     mavenCentral()
 }
 
 dependencies {
-    implementation("net.byteflux:libby-bukkit:2.0.0-SNAPSHOT")
+    implementation("gg.moonrise.libby:libby-bukkit:1.0.0")
 }
 
 tasks.shadowJar {
-    relocate("net.byteflux.libby", "com.example.libs.libby")
+    relocate("gg.moonrise.libby", "com.example.libs.libby")
 }
 ```
 
@@ -85,9 +82,9 @@ tasks.shadowJar {
 
 ```xml
 <dependency>
-    <groupId>net.byteflux</groupId>
+    <groupId>gg.moonrise.libby</groupId>
     <artifactId>libby-bukkit</artifactId>
-    <version>2.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 
 <!-- in <build><plugins> -->
@@ -102,7 +99,7 @@ tasks.shadowJar {
             <configuration>
                 <relocations>
                     <relocation>
-                        <pattern>net.byteflux.libby</pattern>
+                        <pattern>gg.moonrise.libby</pattern>
                         <shadedPattern>com.example.libs.libby</shadedPattern>
                     </relocation>
                 </relocations>
@@ -504,9 +501,12 @@ public final class MyLibraryManager extends LibraryManager {
 `JDKLogAdapter` (for `java.util.logging`) and `SLF4JLogAdapter` are available as log
 adapters.
 
-## Migrating from 0.0.x / 1.x
+## Migrating from Byteflux libby (0.0.x / 1.x)
 
-- **Java 17 baseline.** Libby 2 requires Java 17 or newer.
+- **New coordinates and package.** Libby is now published as `gg.moonrise.libby:libby-<platform>`
+  and its classes moved from `net.byteflux.libby` to `gg.moonrise.libby`. Update your imports
+  and your shading relocation pattern.
+- **Java 17 baseline.** This version requires Java 17 or newer.
 - **Sponge module removed.** Use `libby-core` with an `IsolatedClassLoader` or a custom
   `LibraryManager` subclass.
 - **New relocation tooling.** jar-relocator 1.7 and ASM 9.11.1 replace the old versions, so
@@ -529,7 +529,27 @@ adapters.
 
 ```sh
 ./gradlew build                # compile, test and build every module (Java 21 toolchain)
-./gradlew publishToMavenLocal  # install 2.0.0-SNAPSHOT into ~/.m2/repository
+./gradlew publishToMavenLocal  # install 1.0.0-SNAPSHOT into ~/.m2/repository
+```
+
+### Releasing
+
+Releases go to Maven Central under the `moonrise.gg` namespace. Publishing a GitHub release
+tagged `vX.Y.Z` on `master` runs [`release.yml`](.github/workflows/release.yml), which builds,
+tests, signs and uploads every module as `gg.moonrise.libby:libby-<module>:X.Y.Z`, then waits
+until the release is visible on Central. The workflow needs the repository secrets
+`MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_PASSWORD` (a Central Portal user token),
+`MAVEN_CENTRAL_SIGNING_KEY` (ASCII-armored GPG private key) and
+`MAVEN_CENTRAL_SIGNING_PASSWORD`.
+
+To publish by hand, pass the same values as Gradle properties:
+
+```sh
+ORG_GRADLE_PROJECT_mavenCentralUsername=... \
+ORG_GRADLE_PROJECT_mavenCentralPassword=... \
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --export-secret-keys --armor <key id>)" \
+ORG_GRADLE_PROJECT_signingInMemoryKeyPassword=... \
+./gradlew -PcentralRelease -Pversion=1.0.0 publishToMavenCentral --no-configuration-cache
 ```
 
 Libby is released under the [MIT License](LICENSE).

@@ -1,6 +1,6 @@
-import net.byteflux.libby.gradle.GenerateLibbyProperties
-import net.byteflux.libby.gradle.LayoutMavenRepository
-import net.byteflux.libby.gradle.SystemPropertyDirectory
+import gg.moonrise.libby.gradle.GenerateLibbyProperties
+import gg.moonrise.libby.gradle.LayoutMavenRepository
+import gg.moonrise.libby.gradle.SystemPropertyDirectory
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 
 plugins {
