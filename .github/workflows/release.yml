@@ -1,0 +1,93 @@
+name: Release to Maven Central
+
+# Publishing a GitHub release tagged vX.Y.Z (for example v1.0.0) on master signs every module
+# and uploads it to the Maven Central Portal as gg.moonrise.libby:libby-<module>:X.Y.Z.
+#
+# Required repository secrets:
+#   MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD  Central Portal user token (central.sonatype.com)
+#   MAVEN_CENTRAL_SIGNING_KEY                       ASCII-armored GPG private key
+#   MAVEN_CENTRAL_SIGNING_PASSWORD                  passphrase of that key
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maven-central
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check the release tag
+        id: version
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Release tag '$TAG' must look like v1.2.3"
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD origin/master || {
+            echo "::error::Release tag '$TAG' is not on master"
+            exit 1
+          }
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+      - uses: gradle/actions/wrapper-validation@v6
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: true
+
+      - name: Build and test
+        run: ./gradlew build -Pversion=${{ steps.version.outputs.version }}
+
+      - name: Sign and publish
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_CENTRAL_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_CENTRAL_SIGNING_PASSWORD }}
+        run: |
+          : "${ORG_GRADLE_PROJECT_mavenCentralUsername:?Missing secret MAVEN_CENTRAL_USERNAME}"
+          : "${ORG_GRADLE_PROJECT_mavenCentralPassword:?Missing secret MAVEN_CENTRAL_PASSWORD}"
+          : "${ORG_GRADLE_PROJECT_signingInMemoryKey:?Missing secret MAVEN_CENTRAL_SIGNING_KEY}"
+          ./gradlew -PcentralRelease -Pversion=${{ steps.version.outputs.version }} publishToMavenCentral --no-configuration-cache
+
+      # Publishing returns once Central has validated the deployment; Central then makes it
+      # public on its own schedule, often 15 minutes or more.
+      - name: Wait for the release on Maven Central
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          base=https://repo.maven.apache.org/maven2/gg/moonrise/libby
+          deadline=$((SECONDS + 3600))
+          for module in core slf4j bukkit bungee velocity nukkit paper; do
+            url="$base/libby-$module/$VERSION/libby-$module-$VERSION.pom"
+            until curl -sfI "$url?check=$SECONDS" > /dev/null; do
+              if (( SECONDS > deadline )); then
+                echo "::error::$url is still missing; check the Central Portal deployments page"
+                exit 1
+              fi
+              echo "Waiting for libby-$module $VERSION on Maven Central..."
+              sleep 30
+            done
+            echo "libby-$module $VERSION is on Maven Central"
+          done

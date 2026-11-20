@@ -532,6 +532,26 @@ adapters.
 ./gradlew publishToMavenLocal  # install 1.0.0-SNAPSHOT into ~/.m2/repository
 ```
 
+### Releasing
+
+Releases go to Maven Central under the `moonrise.gg` namespace. Publishing a GitHub release
+tagged `vX.Y.Z` on `master` runs [`release.yml`](.github/workflows/release.yml), which builds,
+tests, signs and uploads every module as `gg.moonrise.libby:libby-<module>:X.Y.Z`, then waits
+until the release is visible on Central. The workflow needs the repository secrets
+`MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_PASSWORD` (a Central Portal user token),
+`MAVEN_CENTRAL_SIGNING_KEY` (ASCII-armored GPG private key) and
+`MAVEN_CENTRAL_SIGNING_PASSWORD`.
+
+To publish by hand, pass the same values as Gradle properties:
+
+```sh
+ORG_GRADLE_PROJECT_mavenCentralUsername=... \
+ORG_GRADLE_PROJECT_mavenCentralPassword=... \
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --export-secret-keys --armor <key id>)" \
+ORG_GRADLE_PROJECT_signingInMemoryKeyPassword=... \
+./gradlew -PcentralRelease -Pversion=1.0.0 publishToMavenCentral --no-configuration-cache
+```
+
 Libby is released under the [MIT License](LICENSE).
 
 ## Credits
