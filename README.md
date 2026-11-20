@@ -64,7 +64,7 @@ with another plugin's copy of libby.
 ```kotlin
 plugins {
     java
-    id("com.gradleup.shadow") version "9.0.0" // or newer
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 repositories {
@@ -94,7 +94,7 @@ tasks.shadowJar {
 <plugin>
     <groupId>org.apache.maven.plugins</groupId>
     <artifactId>maven-shade-plugin</artifactId>
-    <version>3.6.0</version>
+    <version>3.6.2</version>
     <executions>
         <execution>
             <phase>package</phase>
