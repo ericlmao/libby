@@ -1,5 +1,6 @@
 package net.byteflux.libby;
 
+import net.byteflux.libby.classloader.IsolatedClassLoader;
 import net.byteflux.libby.logging.LogLevel;
 import net.byteflux.libby.logging.Logger;
 import net.byteflux.libby.logging.adapters.LogAdapter;
@@ -10,16 +11,21 @@ import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -35,6 +41,13 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * Transitive dependencies for a library aren't downloaded automatically and
  * must be explicitly loaded like every other library.
+ * <p>
+ * Libraries are added to the plugin's own class loader, which on modern Java
+ * versions needs one of the strategies described in
+ * {@link net.byteflux.libby.classloader.URLClassLoaderHelper}. Where that
+ * isn't possible, use a platform-specific manager such as
+ * {@code PaperLibraryManager} or
+ * {@link #loadLibrary(Library, IsolatedClassLoader)}.
  * <p>
  * It's recommended that libraries are relocated to prevent any namespace
  * conflicts with different versions of the same library bundled with other
@@ -94,6 +107,17 @@ public abstract class LibraryManager {
      * processed once
      */
     private final ConcurrentMap<Path, Object> fileLocks = new ConcurrentHashMap<>();
+
+    /**
+     * Libraries loaded into the plugin's classpath by
+     * {@code groupId:artifactId[:classifier]}; the first loaded version wins
+     */
+    private final ConcurrentMap<String, Library> loadedLibraries = new ConcurrentHashMap<>();
+
+    /**
+     * Jars already added to the plugin's classpath, guarded by itself
+     */
+    private final Set<Path> classpathFiles = new HashSet<>();
 
     /**
      * Guards lazy creation of the relocation helper
@@ -544,17 +568,144 @@ public abstract class LibraryManager {
      * <p>
      * If the provided library has any relocations, they will be applied to
      * create a relocated jar and the relocated jar will be loaded instead.
+     * <p>
+     * Each jar is added to the classpath only once. The first version of a
+     * library ({@code groupId:artifactId[:classifier]}) loaded by this manager
+     * wins: loading a different version later logs a warning and is skipped.
      *
      * @param library the library to load
      * @throws LibraryDownloadException if the library couldn't be downloaded
+     * @throws IllegalStateException    if the plugin's classpath can't be modified
      * @see #downloadLibrary(Library)
+     * @see #loadLibrary(Library, IsolatedClassLoader)
      */
     public void loadLibrary(Library library) {
-        Path file = downloadLibrary(requireNonNull(library, "library"));
-        if (library.hasRelocations()) {
-            file = relocate(library, file);
+        for (Library dependency : collectLibraries(requireNonNull(library, "library"))) {
+            loadIntoClasspath(dependency);
+        }
+    }
+
+    /**
+     * Loads a library jar into an isolated class loader instead of the
+     * plugin's classpath, downloading and relocating it as described in
+     * {@link #loadLibrary(Library)}. Jars already on the class loader's
+     * classpath aren't added again.
+     * <p>
+     * This works on every platform, including ones where the plugin's own
+     * class loader can't be modified, but classes loaded this way are only
+     * visible through {@code classLoader}.
+     *
+     * @param library     the library to load
+     * @param classLoader the class loader to add the library to
+     * @throws LibraryDownloadException if the library couldn't be downloaded
+     */
+    public void loadLibrary(Library library, IsolatedClassLoader classLoader) {
+        requireNonNull(classLoader, "classLoader");
+        for (Library dependency : collectLibraries(requireNonNull(library, "library"))) {
+            Path file = fetch(dependency);
+            synchronized (classLoader) {
+                URL url = toURL(file);
+                if (!Arrays.asList(classLoader.getURLs()).contains(url)) {
+                    classLoader.addURL(url);
+                }
+            }
+        }
+    }
+
+    /**
+     * Collects the libraries that must be loaded for a requested library, in
+     * load order.
+     * <p>
+     * The default implementation returns just the requested library. This is
+     * the extension point for resolving transitive dependencies.
+     *
+     * @param root the requested library
+     * @return libraries to load, in order
+     */
+    protected List<Library> collectLibraries(Library root) {
+        return List.of(root);
+    }
+
+    /**
+     * Loads a single library into the plugin's classpath, skipping duplicates
+     * and conflicting versions.
+     *
+     * @param library the library to load
+     */
+    private void loadIntoClasspath(Library library) {
+        String key = coordinates(library);
+        Library existing = loadedLibraries.putIfAbsent(key, library);
+        if (existing != null && !existing.getVersion().equals(library.getVersion())) {
+            logger.warn("Not loading " + library + " because version " + existing.getVersion() + " of " + key + " is already loaded");
+            return;
         }
 
-        addToClasspath(file);
+        Path target = resolveSaveFile(library.hasRelocations() ? requireNonNull(library.getRelocatedPath()) : library.getPath());
+        synchronized (classpathFiles) {
+            if (classpathFiles.contains(target)) {
+                logger.debug("Library " + library + " is already loaded");
+                return;
+            }
+        }
+
+        Path file;
+        try {
+            file = fetch(library);
+        } catch (RuntimeException | Error e) {
+            if (existing == null) {
+                loadedLibraries.remove(key, library);
+            }
+            throw e;
+        }
+
+        synchronized (classpathFiles) {
+            if (classpathFiles.add(file)) {
+                try {
+                    addToClasspath(file);
+                } catch (RuntimeException | Error e) {
+                    classpathFiles.remove(file);
+                    if (existing == null) {
+                        loadedLibraries.remove(key, library);
+                    }
+                    throw e;
+                }
+            }
+        }
+    }
+
+    /**
+     * Downloads a library and applies its relocations.
+     *
+     * @param library the library
+     * @return the jar to load
+     */
+    private Path fetch(Library library) {
+        Path file = downloadLibrary(library);
+        return library.hasRelocations() ? relocate(library, file) : file;
+    }
+
+    /**
+     * Gets the version-less coordinates identifying a library.
+     *
+     * @param library the library
+     * @return {@code groupId:artifactId[:classifier]}
+     */
+    private static String coordinates(Library library) {
+        String key = library.getGroupId() + ':' + library.getArtifactId();
+        return library.hasClassifier() ? key + ':' + library.getClassifier() : key;
+    }
+
+    /**
+     * Converts a path to a URL.
+     *
+     * @param file the path
+     * @return the URL
+     */
+    private static URL toURL(Path file) {
+        try {
+            return file.toUri().toURL();
+        } catch (MalformedURLException e) {
+            throw new IllegalArgumentException(e);
+        }
     }
 }

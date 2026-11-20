@@ -3,6 +3,7 @@ package net.byteflux.libby;
 import net.byteflux.libby.logging.LogLevel;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -13,16 +14,33 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class TestLibraryManager extends LibraryManager {
     private final RecordingLogAdapter log;
     private final List<Path> classpath = new CopyOnWriteArrayList<>();
+    private final List<Library> dependencies;
 
-    private TestLibraryManager(RecordingLogAdapter log, Path dataDirectory) {
+    private TestLibraryManager(RecordingLogAdapter log, Path dataDirectory, List<Library> dependencies) {
         super(log, dataDirectory);
         this.log = log;
+        this.dependencies = dependencies;
     }
 
     public static TestLibraryManager create(Path dataDirectory) {
-        TestLibraryManager manager = new TestLibraryManager(new RecordingLogAdapter(), dataDirectory);
+        return withDependencies(dataDirectory, List.of());
+    }
+
+    /**
+     * Creates a manager whose {@link #collectLibraries(Library)} loads the
+     * given dependencies before every requested library.
+     */
+    public static TestLibraryManager withDependencies(Path dataDirectory, List<Library> dependencies) {
+        TestLibraryManager manager = new TestLibraryManager(new RecordingLogAdapter(), dataDirectory, List.copyOf(dependencies));
         manager.setLogLevel(LogLevel.DEBUG);
         return manager;
+    }
+
+    @Override
+    protected List<Library> collectLibraries(Library root) {
+        List<Library> libraries = new ArrayList<>(dependencies);
+        libraries.add(root);
+        return libraries;
     }
 
     @Override
