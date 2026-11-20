@@ -1,7 +1,7 @@
 name: Release to Maven Central
 
 # Publishing a GitHub release tagged vX.Y.Z (for example v1.0.0) on master signs every module
-# and uploads it to the Maven Central Portal as gg.moonrise:libby-<module>:X.Y.Z.
+# and uploads it to the Maven Central Portal as gg.moonrise.libby:libby-<module>:X.Y.Z.
 #
 # Required repository secrets:
 #   MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD  Central Portal user token (central.sonatype.com)
@@ -77,7 +77,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          base=https://repo.maven.apache.org/maven2/gg/moonrise
+          base=https://repo.maven.apache.org/maven2/gg/moonrise/libby
           deadline=$((SECONDS + 3600))
           for module in core slf4j bukkit bungee velocity nukkit paper; do
             url="$base/libby-$module/$VERSION/libby-$module-$VERSION.pom"

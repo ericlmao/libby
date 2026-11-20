@@ -51,8 +51,9 @@ Libby requires **Java 17 or newer** at runtime.
 
 ## Installation
 
-Libby is published to Maven Central as `gg.moonrise:libby-<platform>:1.0.0`, for example
-`gg.moonrise:libby-bukkit:1.0.0`.
+Libby is published to Maven Central as `gg.moonrise.libby:libby-<platform>:1.0.0`, for example
+`gg.moonrise.libby:libby-bukkit:1.0.0`. (A copy of 1.0.0 was published under `gg.moonrise` by
+mistake; it won't receive updates, so use the `gg.moonrise.libby` group.)
 
 Libby is meant to be **shaded into your plugin and relocated**, so that it never clashes
 with another plugin's copy of libby.
@@ -70,7 +71,7 @@ repositories {
 }
 
 dependencies {
-    implementation("gg.moonrise:libby-bukkit:1.0.0")
+    implementation("gg.moonrise.libby:libby-bukkit:1.0.0")
 }
 
 tasks.shadowJar {
@@ -82,7 +83,7 @@ tasks.shadowJar {
 
 ```xml
 <dependency>
-    <groupId>gg.moonrise</groupId>
+    <groupId>gg.moonrise.libby</groupId>
     <artifactId>libby-bukkit</artifactId>
     <version>1.0.0</version>
 </dependency>
@@ -503,7 +504,7 @@ adapters.
 
 ## Migrating from Byteflux libby (0.0.x / 1.x)
 
-- **New coordinates and package.** Libby is now published as `gg.moonrise:libby-<platform>`
+- **New coordinates and package.** Libby is now published as `gg.moonrise.libby:libby-<platform>`
   and its classes moved from `net.byteflux.libby` to `gg.moonrise.libby`. Update your imports
   and your shading relocation pattern.
 - **Java 17 baseline.** This version requires Java 17 or newer.
@@ -536,7 +537,7 @@ adapters.
 
 Releases go to Maven Central under the `moonrise.gg` namespace. Publishing a GitHub release
 tagged `vX.Y.Z` on `master` runs [`release.yml`](.github/workflows/release.yml), which builds,
-tests, signs and uploads every module as `gg.moonrise:libby-<module>:X.Y.Z`, then waits
+tests, signs and uploads every module as `gg.moonrise.libby:libby-<module>:X.Y.Z`, then waits
 until the release is visible on Central. The workflow needs the repository secrets
 `MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_PASSWORD` (a Central Portal user token),
 `MAVEN_CENTRAL_SIGNING_KEY` (ASCII-armored GPG private key) and
