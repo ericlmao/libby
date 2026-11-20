@@ -1,6 +1,7 @@
 package net.byteflux.libby.logging.adapters;
 
 import net.byteflux.libby.logging.LogLevel;
+import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 
 import static java.util.Objects.requireNonNull;
@@ -8,6 +9,7 @@ import static java.util.Objects.requireNonNull;
 /**
  * Logging adapter that logs to a SLF4J logger.
  */
+@NullMarked
 public class SLF4JLogAdapter implements LogAdapter {
     /**
      * SLF4J logger
@@ -32,18 +34,10 @@ public class SLF4JLogAdapter implements LogAdapter {
     @Override
     public void log(LogLevel level, String message) {
         switch (requireNonNull(level, "level")) {
-            case DEBUG:
-                logger.debug(message);
-                break;
-            case INFO:
-                logger.info(message);
-                break;
-            case WARN:
-                logger.warn(message);
-                break;
-            case ERROR:
-                logger.error(message);
-                break;
+            case DEBUG -> logger.debug(message);
+            case INFO -> logger.info(message);
+            case WARN -> logger.warn(message);
+            case ERROR -> logger.error(message);
         }
     }
 
@@ -58,18 +52,10 @@ public class SLF4JLogAdapter implements LogAdapter {
     @Override
     public void log(LogLevel level, String message, Throwable throwable) {
         switch (requireNonNull(level, "level")) {
-            case DEBUG:
-                logger.debug(message, throwable);
-                break;
-            case INFO:
-                logger.info(message, throwable);
-                break;
-            case WARN:
-                logger.warn(message, throwable);
-                break;
-            case ERROR:
-                logger.error(message, throwable);
-                break;
+            case DEBUG -> logger.debug(message, throwable);
+            case INFO -> logger.info(message, throwable);
+            case WARN -> logger.warn(message, throwable);
+            case ERROR -> logger.error(message, throwable);
         }
     }
 }

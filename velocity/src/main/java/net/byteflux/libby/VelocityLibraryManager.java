@@ -4,6 +4,7 @@ import com.google.inject.Inject;
 import com.velocitypowered.api.plugin.PluginManager;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import net.byteflux.libby.logging.adapters.SLF4JLogAdapter;
+import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
@@ -12,7 +13,37 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * A runtime dependency manager for Velocity plugins.
+ * <p>
+ * Libraries are added to the plugin's classpath with
+ * {@link PluginManager#addToClasspath(Object, Path)}, which Velocity only
+ * accepts once the plugin instance is registered. That happens after the
+ * plugin's constructor returns, so loading libraries from the constructor
+ * fails with {@code IllegalArgumentException: plugin is not loaded}. Load
+ * them in a {@code ProxyInitializeEvent} handler instead.
+ * <p>
+ * The manager can be injected by Guice into a field of type
+ * {@code VelocityLibraryManager<MyPlugin>} (not a constructor parameter of the
+ * plugin, which would be a circular dependency), or created directly in the
+ * event handler:
+ * <pre>{@code
+ * @Subscribe
+ * public void onProxyInitialization(ProxyInitializeEvent event) {
+ *     VelocityLibraryManager<MyPlugin> libraryManager =
+ *         new VelocityLibraryManager<>(this, logger, dataDirectory, server.getPluginManager());
+ *     libraryManager.addMavenCentral();
+ *     libraryManager.loadLibrary(Library.builder()
+ *         .groupId("com{}google{}code{}gson")
+ *         .artifactId("gson")
+ *         .version("2.11.0")
+ *         .build());
+ * }
+ * }</pre>
+ * where {@code server}, {@code logger} and {@code dataDirectory} were
+ * injected into the plugin's constructor.
+ *
+ * @param <T> the plugin's main class
  */
+@NullMarked
 public class VelocityLibraryManager<T> extends LibraryManager {
     /**
      * Velocity plugin manager used for adding files to the plugin's classpath
@@ -23,10 +54,11 @@ public class VelocityLibraryManager<T> extends LibraryManager {
      * The plugin instance required by the plugin manager to add files to the
      * plugin's classpath
      */
-    private final T plugin;
+    private final Object plugin;
 
     /**
-     * Creates a new Velocity library manager.
+     * Creates a new Velocity library manager. This constructor is used by
+     * Guice injection.
      *
      * @param logger        the plugin logger
      * @param dataDirectory plugin's data directory
@@ -34,11 +66,25 @@ public class VelocityLibraryManager<T> extends LibraryManager {
      * @param plugin        the plugin to manage
      */
     @Inject
-    private VelocityLibraryManager(Logger logger,
-                                   @DataDirectory Path dataDirectory,
-                                   PluginManager pluginManager,
-                                   T plugin) {
+    public VelocityLibraryManager(Logger logger,
+                                  @DataDirectory Path dataDirectory,
+                                  PluginManager pluginManager,
+                                  T plugin) {
 
+        this(plugin, logger, dataDirectory, pluginManager);
+    }
+
+    /**
+     * Creates a new Velocity library manager that saves libraries to the
+     * {@value #DEFAULT_DIRECTORY_NAME} directory in the plugin's data
+     * directory.
+     *
+     * @param plugin        the plugin instance to manage
+     * @param logger        the plugin logger
+     * @param dataDirectory plugin's data directory
+     * @param pluginManager Velocity plugin manager
+     */
+    public VelocityLibraryManager(Object plugin, Logger logger, Path dataDirectory, PluginManager pluginManager) {
         super(new SLF4JLogAdapter(logger), dataDirectory);
         this.pluginManager = requireNonNull(pluginManager, "pluginManager");
         this.plugin = requireNonNull(plugin, "plugin");

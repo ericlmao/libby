@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Downloaded at runtime with checksums pinned in RelocationHelper: update them together
+      # by hand.
+      - dependency-name: me.lucko:jar-relocator
+      - dependency-name: org.ow2.asm:*
+      # 3.5 and newer require Java 21, libby targets Java 17.
+      - dependency-name: com.velocitypowered:velocity-api
+        versions: [">= 3.5"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
