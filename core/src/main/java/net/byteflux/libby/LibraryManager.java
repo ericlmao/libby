@@ -5,6 +5,8 @@ import net.byteflux.libby.logging.LogLevel;
 import net.byteflux.libby.logging.Logger;
 import net.byteflux.libby.logging.adapters.LogAdapter;
 import net.byteflux.libby.relocation.RelocationHelper;
+import net.byteflux.libby.resolver.DependencyResolver;
+import net.byteflux.libby.resolver.TransitiveDependencyException;
 import net.byteflux.libby.transport.ArtifactDownloader;
 import net.byteflux.libby.transport.Checksums;
 import org.jspecify.annotations.Nullable;
@@ -39,8 +41,9 @@ import static java.util.Objects.requireNonNull;
  * Maven repositories, download it into a local cache, relocate it and then
  * load it into the plugin's classpath.
  * <p>
- * Transitive dependencies for a library aren't downloaded automatically and
- * must be explicitly loaded like every other library.
+ * Transitive dependencies of a library are only downloaded and loaded if the
+ * library enables {@link Library.Builder#resolveTransitiveDependencies(boolean)};
+ * otherwise they must be explicitly loaded like every other library.
  * <p>
  * Libraries are added to the plugin's own class loader, which on modern Java
  * versions needs one of the strategies described in
@@ -380,6 +383,56 @@ public abstract class LibraryManager {
     }
 
     /**
+     * Resolves the transitive dependencies of a library from its POM, and its
+     * parent POMs and imported BOMs, downloaded from this manager's
+     * repositories. This works whether or not the library enables
+     * {@link Library.Builder#resolveTransitiveDependencies(boolean)}, which
+     * makes it useful for inspecting a dependency tree or for pinning the
+     * resolved versions as explicit libraries.
+     * <p>
+     * The returned libraries are ordered so that dependencies come before the
+     * libraries that need them. They have no direct download URLs and no
+     * pinned checksum (repository checksum files are used to verify them),
+     * carry the library's relocations and don't resolve transitive
+     * dependencies themselves. The library's
+     * {@linkplain Library#getExcludedTransitiveDependencies() exclusions} are
+     * applied. POMs are cached in the save directory like jars.
+     * <p>
+     * See {@link DependencyResolver} for the supported POM features.
+     *
+     * @param library the library to resolve the dependencies of
+     * @return the transitive dependencies, without {@code library}
+     * @throws TransitiveDependencyException if a dependency can't be resolved,
+     *                                       for example because it uses a version range
+     */
+    public List<Library> resolveTransitiveLibraries(Library library) {
+        return new DependencyResolver(logger, this::downloadPom).resolve(requireNonNull(library, "library"));
+    }
+
+    /**
+     * Downloads a POM file to the save directory if it doesn't already exist
+     * and returns the local file path.
+     *
+     * @param groupId    Maven group ID
+     * @param artifactId Maven artifact ID
+     * @param version    artifact version
+     * @return local file path to the POM
+     * @throws LibraryDownloadException if the POM couldn't be downloaded
+     */
+    private Path downloadPom(String groupId, String artifactId, String version) {
+        String path = groupId.replace('.', '/') + '/' + artifactId + '/' + version + '/' + artifactId + '-' + version + ".pom";
+        Path file = resolveSaveFile(path);
+        List<String> urls = new ArrayList<>();
+        for (String repository : getRepositories()) {
+            urls.add(repository + path);
+        }
+
+        synchronized (lockFor(file)) {
+            return downloader.downloadFile(groupId + ':' + artifactId + ':' + version + " (pom)", urls, file, DependencyResolver.MAX_POM_SIZE);
+        }
+    }
+
+    /**
      * Downloads a library jar to the save directory if it doesn't already
      * exist and returns the local file path.
      * <p>
@@ -569,12 +622,20 @@ public abstract class LibraryManager {
      * If the provided library has any relocations, they will be applied to
      * create a relocated jar and the relocated jar will be loaded instead.
      * <p>
+     * If the library enables
+     * {@link Library.Builder#resolveTransitiveDependencies(boolean)}, its
+     * transitive dependencies are resolved with
+     * {@link #resolveTransitiveLibraries(Library)} and loaded first.
+     * <p>
      * Each jar is added to the classpath only once. The first version of a
      * library ({@code groupId:artifactId[:classifier]}) loaded by this manager
      * wins: loading a different version later logs a warning and is skipped.
+     * This also applies to transitive dependencies, so loading a library
+     * explicitly before the library that depends on it pins its version.
      *
      * @param library the library to load
-     * @throws LibraryDownloadException if the library couldn't be downloaded
+     * @throws LibraryDownloadException      if a library couldn't be downloaded
+     * @throws TransitiveDependencyException if transitive dependencies can't be resolved
      * @throws IllegalStateException    if the plugin's classpath can't be modified
      * @see #downloadLibrary(Library)
      * @see #loadLibrary(Library, IsolatedClassLoader)
@@ -597,7 +658,8 @@ public abstract class LibraryManager {
      *
      * @param library     the library to load
      * @param classLoader the class loader to add the library to
-     * @throws LibraryDownloadException if the library couldn't be downloaded
+     * @throws LibraryDownloadException      if a library couldn't be downloaded
+     * @throws TransitiveDependencyException if transitive dependencies can't be resolved
      */
     public void loadLibrary(Library library, IsolatedClassLoader classLoader) {
         requireNonNull(classLoader, "classLoader");
@@ -616,14 +678,23 @@ public abstract class LibraryManager {
      * Collects the libraries that must be loaded for a requested library, in
      * load order.
      * <p>
-     * The default implementation returns just the requested library. This is
-     * the extension point for resolving transitive dependencies.
+     * The default implementation returns just the requested library, or if
+     * it enables {@link Library.Builder#resolveTransitiveDependencies(boolean)},
+     * its {@linkplain #resolveTransitiveLibraries(Library) transitive
+     * dependencies} followed by the library itself.
      *
      * @param root the requested library
      * @return libraries to load, in order
+     * @throws TransitiveDependencyException if transitive dependencies can't be resolved
      */
     protected List<Library> collectLibraries(Library root) {
-        return List.of(root);
+        if (!root.isResolveTransitiveDependencies()) {
+            return List.of(root);
+        }
+
+        List<Library> libraries = new ArrayList<>(resolveTransitiveLibraries(root));
+        libraries.add(root);
+        return List.copyOf(libraries);
     }
 
     /**

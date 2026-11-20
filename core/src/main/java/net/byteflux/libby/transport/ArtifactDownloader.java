@@ -45,6 +45,10 @@ import static java.util.Objects.requireNonNull;
  * installed file gets its SHA-256 checksum recorded in a {@code .sha256}
  * sidecar so cached files can be re-verified later.
  * <p>
+ * Small files such as POMs are downloaded with
+ * {@link #downloadFile(String, Collection, Path, long)}, which applies the same
+ * policy with a smaller size limit.
+ * <p>
  * This class does not lock: callers must make sure only one thread downloads
  * to a given target path at a time. It is an internal class and not part of
  * the stable API.
@@ -215,28 +219,70 @@ public final class ArtifactDownloader {
      */
     public Path download(Library library, Collection<String> urls, Path target) {
         requireNonNull(library, "library");
+        return download(new Request(library.toString(), library.getChecksum(), maxDownloadSize, false), urls, target);
+    }
+
+    /**
+     * Returns a usable cached copy of a small file, such as a POM, at
+     * {@code target}, or downloads it from the first URL that serves a
+     * verified copy.
+     * <p>
+     * The same URL scheme policy, status handling, checksum file verification
+     * and checksum recording as for library jars apply, but downloads and
+     * missing checksum files are only logged at debug level.
+     *
+     * @param name    name of the file used in messages, such as {@code g:a:v (pom)}
+     * @param urls    candidate download URLs in order of preference
+     * @param target  the file to install the file to
+     * @param maxSize maximum size of the file in bytes, at most the
+     *                {@linkplain #getMaxDownloadSize() maximum download size}
+     * @return {@code target}
+     * @throws LibraryDownloadException if no URL served a verified copy
+     */
+    public Path downloadFile(String name, Collection<String> urls, Path target, long maxSize) {
+        requireNonNull(name, "name");
+        if (maxSize <= 0) {
+            throw new IllegalArgumentException("maxSize must be positive");
+        }
+        return download(new Request(name, null, Math.min(maxSize, maxDownloadSize), true), urls, target);
+    }
+
+    /**
+     * Returns a usable cached copy of a file or downloads it.
+     *
+     * @param request what to download
+     * @param urls    candidate download URLs in order of preference
+     * @param target  the file to install to
+     * @return {@code target}
+     * @throws LibraryDownloadException if no URL served a verified copy
+     */
+    private Path download(Request request, Collection<String> urls, Path target) {
         requireNonNull(urls, "urls");
         requireNonNull(target, "target");
 
         try {
-            if (isCacheUsable(library, urls, target)) {
+            if (isCacheUsable(request, urls, target)) {
                 return target;
             }
 
             if (urls.isEmpty()) {
-                throw new LibraryDownloadException(library, List.of());
+                throw new LibraryDownloadException(request.name, List.of(), null);
             }
 
             Files.createDirectories(target.getParent());
         } catch (IOException e) {
-            throw new LibraryDownloadException(library, List.of(new LibraryDownloadException.Attempt(target.toString(), "cache error: " + e)), e);
+            throw new LibraryDownloadException(request.name, List.of(new LibraryDownloadException.Attempt(target.toString(), "cache error: " + e)), e);
         }
 
         List<LibraryDownloadException.Attempt> attempts = new ArrayList<>();
         for (String url : urls) {
             try {
-                downloadFrom(library, url, target);
-                logger.info("Downloaded library " + url);
+                downloadFrom(request, url, target);
+                if (request.quiet) {
+                    logger.debug("Downloaded " + url);
+                } else {
+                    logger.info("Downloaded library " + url);
+                }
                 return target;
             } catch (AttemptFailedException e) {
                 logger.debug("Couldn't download " + url + ": " + e.getMessage());
@@ -244,37 +290,43 @@ public final class ArtifactDownloader {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 attempts.add(new LibraryDownloadException.Attempt(url, "interrupted"));
-                throw new LibraryDownloadException(library, attempts, e);
+                throw new LibraryDownloadException(request.name, attempts, e);
             }
         }
 
-        throw new LibraryDownloadException(library, attempts);
+        throw new LibraryDownloadException(request.name, attempts, null);
     }
 
     /**
-     * Checks whether a cached copy of the library can be used, deleting it if
-     * it fails a known checksum.
+     * Checks whether a cached copy of a file can be used, deleting it if it
+     * fails a known checksum.
      *
-     * @param library the library
+     * @param request what is being downloaded
      * @param urls    candidate download URLs, used to look up checksums for
      *                files cached without a recorded checksum
      * @param target  the cached file
      * @return true if the cached file is usable
      * @throws IOException if the cached file can't be read or deleted
      */
-    private boolean isCacheUsable(Library library, Collection<String> urls, Path target) throws IOException {
+    private boolean isCacheUsable(Request request, Collection<String> urls, Path target) throws IOException {
         if (!Files.isRegularFile(target)) {
             return false;
         }
 
+        if (request.quiet && Files.size(target) > request.maxSize) {
+            logger.warn("Cached file " + target + " is larger than " + request.maxSize + " bytes, downloading it again");
+            Checksums.deleteWithRecord(target);
+            return false;
+        }
+
         byte[] sha256 = Checksums.digest(target, Checksums.SHA_256);
-        byte[] pinned = library.getChecksum();
+        byte[] pinned = request.pinned;
         if (pinned != null) {
             if (MessageDigest.isEqual(pinned, sha256)) {
                 return true;
             }
 
-            logger.warn("Cached jar " + target + " doesn't match the pinned checksum of " + library + ", downloading it again");
+            logger.warn("Cached jar " + target + " doesn't match the pinned checksum of " + request.name + ", downloading it again");
             Checksums.deleteWithRecord(target);
             return false;
         }
@@ -285,7 +337,7 @@ public final class ArtifactDownloader {
                 return true;
             }
 
-            logger.warn("Cached jar " + target + " doesn't match its recorded checksum, downloading it again");
+            logger.warn("Cached " + (request.quiet ? "file " : "jar ") + target + " doesn't match its recorded checksum, downloading it again");
             Checksums.deleteWithRecord(target);
             return false;
         }
@@ -313,27 +365,27 @@ public final class ArtifactDownloader {
                     return true;
                 }
 
-                logger.warn("Cached jar " + target + " doesn't match " + expected.source + ", downloading it again");
+                logger.warn("Cached " + (request.quiet ? "file " : "jar ") + target + " doesn't match " + expected.source + ", downloading it again");
                 Checksums.deleteWithRecord(target);
                 return false;
             }
         }
 
-        warnUnverified(library);
+        warnUnverified(request);
         Checksums.record(target, sha256);
         return true;
     }
 
     /**
-     * Downloads, verifies and installs the library from a single URL.
+     * Downloads, verifies and installs a file from a single URL.
      *
-     * @param library the library
+     * @param request what is being downloaded
      * @param url     the URL to download from
      * @param target  the file to install to
      * @throws AttemptFailedException if this URL didn't produce a verified copy
      * @throws InterruptedException   if the thread was interrupted
      */
-    private void downloadFrom(Library library, String url, Path target) throws AttemptFailedException, InterruptedException {
+    private void downloadFrom(Request request, String url, Path target) throws AttemptFailedException, InterruptedException {
         URI uri = toUri(url);
         if (uri == null) {
             throw new AttemptFailedException("invalid URL");
@@ -348,7 +400,7 @@ public final class ArtifactDownloader {
             throw new AttemptFailedException("unsupported URL scheme");
         }
 
-        byte[] pinned = library.getChecksum();
+        byte[] pinned = request.pinned;
         ExpectedChecksum expected = pinned != null
             ? new ExpectedChecksum(ChecksumAlgorithm.SHA_256, pinned, "pinned checksum")
             : fetchRemoteChecksum(uri);
@@ -362,9 +414,9 @@ public final class ArtifactDownloader {
                 ? null
                 : Checksums.newDigest(expected.algorithm.digestName);
 
-            try (InputStream in = open(uri, maxDownloadSize);
+            try (InputStream in = open(uri, request.maxSize);
                  OutputStream out = Files.newOutputStream(temp)) {
-                copy(in, out, maxDownloadSize, sha256, verify);
+                copy(in, out, request.maxSize, sha256, verify);
             }
 
             byte[] sha256Bytes = sha256.digest();
@@ -372,14 +424,14 @@ public final class ArtifactDownloader {
                 byte[] actual = verify != null ? verify.digest() : sha256Bytes;
                 if (!MessageDigest.isEqual(expected.checksum, actual)) {
                     logger.warn("*** INVALID CHECKSUM ***");
-                    logger.warn(" Library :  " + library);
+                    logger.warn(" Library :  " + request.name);
                     logger.warn(" URL :  " + url);
                     logger.warn(" Expected :  " + Base64.getEncoder().encodeToString(expected.checksum) + " (" + expected.algorithm.digestName + ", " + expected.source + ')');
                     logger.warn(" Actual :  " + Base64.getEncoder().encodeToString(actual));
                     throw new AttemptFailedException("checksum mismatch (" + expected.source + ')');
                 }
             } else {
-                warnUnverified(library);
+                warnUnverified(request);
             }
 
             Checksums.record(target, sha256Bytes);
@@ -562,12 +614,15 @@ public final class ArtifactDownloader {
 
     /**
      * Logs a warning, once per library, that a download couldn't be verified.
+     * Quiet requests only log at debug level.
      *
-     * @param library the unverified library
+     * @param request the unverified download
      */
-    private void warnUnverified(Library library) {
-        if (warnedUnverified.add(library.toString())) {
-            logger.warn("No checksum available for " + library + ", integrity not verified; pin one with Library.Builder#checksum");
+    private void warnUnverified(Request request) {
+        if (request.quiet) {
+            logger.debug("No checksum available for " + request.name + ", integrity not verified");
+        } else if (warnedUnverified.add(request.name)) {
+            logger.warn("No checksum available for " + request.name + ", integrity not verified; pin one with Library.Builder#checksum");
         }
     }
 
@@ -662,6 +717,17 @@ public final class ArtifactDownloader {
             this.extension = extension;
             this.length = length;
         }
+    }
+
+    /**
+     * A file to download.
+     *
+     * @param name    name of the file used in messages
+     * @param pinned  pinned SHA-256 checksum, or null to use checksum files
+     * @param maxSize maximum size in bytes
+     * @param quiet   whether to log routine messages at debug level only
+     */
+    private record Request(String name, byte @Nullable [] pinned, long maxSize, boolean quiet) {
     }
 
     /**

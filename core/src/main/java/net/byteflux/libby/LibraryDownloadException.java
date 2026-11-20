@@ -31,8 +31,20 @@ public class LibraryDownloadException extends RuntimeException {
      * @param cause    the cause, or null
      */
     public LibraryDownloadException(Library library, List<Attempt> attempts, @Nullable Throwable cause) {
-        super(buildMessage(requireNonNull(library, "library"), requireNonNull(attempts, "attempts")), cause);
-        this.library = library.toString();
+        this(requireNonNull(library, "library").toString(), attempts, cause);
+    }
+
+    /**
+     * Creates a new download exception for an artifact that isn't described
+     * by a {@link Library}, such as a POM file.
+     *
+     * @param artifact name of the artifact that failed to download
+     * @param attempts every attempted URL and why it failed
+     * @param cause    the cause, or null
+     */
+    public LibraryDownloadException(String artifact, List<Attempt> attempts, @Nullable Throwable cause) {
+        super(buildMessage(requireNonNull(artifact, "artifact"), requireNonNull(attempts, "attempts")), cause);
+        this.library = artifact;
         this.attempts = List.copyOf(attempts);
     }
 
@@ -69,11 +81,11 @@ public class LibraryDownloadException extends RuntimeException {
     /**
      * Builds the exception message.
      *
-     * @param library  the library that failed to download
+     * @param library  name of the library that failed to download
      * @param attempts the failed attempts
      * @return exception message
      */
-    private static String buildMessage(Library library, List<Attempt> attempts) {
+    private static String buildMessage(String library, List<Attempt> attempts) {
         if (attempts.isEmpty()) {
             return "Library '" + library + "' couldn't be resolved, add a repository";
         }

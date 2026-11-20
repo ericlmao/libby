@@ -39,7 +39,7 @@ public final class TestLibraryManager extends LibraryManager {
     @Override
     protected List<Library> collectLibraries(Library root) {
         List<Library> libraries = new ArrayList<>(dependencies);
-        libraries.add(root);
+        libraries.addAll(super.collectLibraries(root));
         return libraries;
     }
 

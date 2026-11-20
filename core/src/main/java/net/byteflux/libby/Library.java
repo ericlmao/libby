@@ -78,6 +78,16 @@ public class Library {
     private final Collection<Relocation> relocations;
 
     /**
+     * Whether transitive dependencies are resolved from POMs and loaded too
+     */
+    private final boolean resolveTransitiveDependencies;
+
+    /**
+     * Transitive dependencies that are never resolved
+     */
+    private final List<ExcludedDependency> excludedTransitiveDependencies;
+
+    /**
      * Relative Maven path to this library's artifact
      */
     private final String path;
@@ -97,6 +107,8 @@ public class Library {
      * @param classifier  artifact classifier or null
      * @param checksum    binary SHA-256 checksum or null
      * @param relocations jar relocations
+     * @param resolveTransitiveDependencies whether to resolve transitive dependencies
+     * @param excludedTransitiveDependencies transitive dependencies to exclude
      * @throws IllegalArgumentException if a coordinate or the checksum is invalid
      */
     private Library(Collection<String> urls,
@@ -105,7 +117,9 @@ public class Library {
                     @Nullable String version,
                     @Nullable String classifier,
                     byte @Nullable [] checksum,
-                    Collection<Relocation> relocations) {
+                    Collection<Relocation> relocations,
+                    boolean resolveTransitiveDependencies,
+                    Collection<ExcludedDependency> excludedTransitiveDependencies) {
 
         this.urls = List.copyOf(urls);
         // "{}" is accepted in place of "." so that build-time shading/relocation tools
@@ -119,6 +133,8 @@ public class Library {
         }
         this.checksum = checksum != null ? checksum.clone() : null;
         this.relocations = List.copyOf(relocations);
+        this.resolveTransitiveDependencies = resolveTransitiveDependencies;
+        this.excludedTransitiveDependencies = List.copyOf(excludedTransitiveDependencies);
 
         String path = this.groupId.replace('.', '/') + '/' + artifactId + '/' + version + '/' + artifactId + '-' + version;
         if (hasClassifier()) {
@@ -220,6 +236,28 @@ public class Library {
     }
 
     /**
+     * Gets whether this library's transitive dependencies are resolved from
+     * its POM and loaded together with it.
+     *
+     * @return true if transitive dependencies are resolved, false by default
+     * @see Builder#resolveTransitiveDependencies(boolean)
+     */
+    public boolean isResolveTransitiveDependencies() {
+        return resolveTransitiveDependencies;
+    }
+
+    /**
+     * Gets the transitive dependencies that are never resolved for this
+     * library, in the order they were added.
+     *
+     * @return excluded transitive dependencies
+     * @see Builder#excludeTransitiveDependency(String, String)
+     */
+    public List<ExcludedDependency> getExcludedTransitiveDependencies() {
+        return excludedTransitiveDependencies;
+    }
+
+    /**
      * Gets the relative Maven path to this library's artifact.
      *
      * @return Maven path for this library
@@ -258,8 +296,8 @@ public class Library {
 
     /**
      * Compares this library with another object. Two libraries are equal when
-     * their coordinates, checksum, direct download URLs and relocations are
-     * equal.
+     * their coordinates, checksum, direct download URLs, relocations and
+     * transitive dependency settings are equal.
      *
      * @param o the object to compare with
      * @return true if the object is an equal library
@@ -280,7 +318,9 @@ public class Library {
             && Objects.equals(classifier, other.classifier)
             && Arrays.equals(checksum, other.checksum)
             && urls.equals(other.urls)
-            && relocations.equals(other.relocations);
+            && relocations.equals(other.relocations)
+            && resolveTransitiveDependencies == other.resolveTransitiveDependencies
+            && excludedTransitiveDependencies.equals(other.excludedTransitiveDependencies);
     }
 
     /**
@@ -290,7 +330,8 @@ public class Library {
      */
     @Override
     public int hashCode() {
-        return 31 * Objects.hash(groupId, artifactId, version, classifier, urls, relocations) + Arrays.hashCode(checksum);
+        return 31 * Objects.hash(groupId, artifactId, version, classifier, urls, relocations,
+            resolveTransitiveDependencies, excludedTransitiveDependencies) + Arrays.hashCode(checksum);
     }
 
     /**
@@ -396,6 +437,16 @@ public class Library {
         private final List<Relocation> relocations = new ArrayList<>();
 
         /**
+         * Whether transitive dependencies are resolved
+         */
+        private boolean resolveTransitiveDependencies;
+
+        /**
+         * Transitive dependencies that are never resolved
+         */
+        private final List<ExcludedDependency> excludedTransitiveDependencies = new ArrayList<>();
+
+        /**
          * Adds a direct download URL for this library.
          *
          * @param url direct download URL
@@ -496,6 +547,60 @@ public class Library {
         }
 
         /**
+         * Sets whether this library's transitive dependencies are resolved
+         * from its POM and loaded together with it. Disabled by default.
+         * <p>
+         * When enabled, the library manager downloads the library's POM (and
+         * its parent POMs and imported BOMs) from its repositories and loads
+         * the library's {@code compile} and {@code runtime} scoped
+         * dependencies, recursively, with Maven's nearest-wins version
+         * mediation. Transitive dependencies are downloaded from the
+         * manager's repositories (never from this library's direct URLs), get
+         * this library's relocations and are verified against the
+         * repository's checksum files. See
+         * {@link net.byteflux.libby.resolver.DependencyResolver} for the
+         * supported POM features.
+         *
+         * @param resolveTransitiveDependencies true to resolve transitive dependencies
+         * @return this builder
+         * @see LibraryManager#resolveTransitiveLibraries(Library)
+         * @see #excludeTransitiveDependency(String, String)
+         */
+        public Builder resolveTransitiveDependencies(boolean resolveTransitiveDependencies) {
+            this.resolveTransitiveDependencies = resolveTransitiveDependencies;
+            return this;
+        }
+
+        /**
+         * Excludes a transitive dependency, and with it everything that only
+         * it depends on, when transitive dependencies are resolved. Either
+         * value may be {@code *} to match anything, and {@code {}} is
+         * accepted in place of {@code .} in the group ID.
+         *
+         * @param groupId    Maven group ID or {@code *}
+         * @param artifactId Maven artifact ID or {@code *}
+         * @return this builder
+         * @throws IllegalArgumentException if a value is neither {@code *} nor a valid coordinate
+         * @see #resolveTransitiveDependencies(boolean)
+         */
+        public Builder excludeTransitiveDependency(String groupId, String artifactId) {
+            return excludeTransitiveDependency(new ExcludedDependency(groupId, artifactId));
+        }
+
+        /**
+         * Excludes a transitive dependency, and with it everything that only
+         * it depends on, when transitive dependencies are resolved.
+         *
+         * @param excludedDependency the dependency to exclude
+         * @return this builder
+         * @see #excludeTransitiveDependency(String, String)
+         */
+        public Builder excludeTransitiveDependency(ExcludedDependency excludedDependency) {
+            excludedTransitiveDependencies.add(requireNonNull(excludedDependency, "excludedDependency"));
+            return this;
+        }
+
+        /**
          * Creates a new library using this builder's configuration.
          *
          * @return new library
@@ -503,7 +608,8 @@ public class Library {
          * @throws IllegalArgumentException if a coordinate or the checksum is invalid
          */
         public Library build() {
-            return new Library(urls, groupId, artifactId, version, classifier, checksum, relocations);
+            return new Library(urls, groupId, artifactId, version, classifier, checksum, relocations,
+                resolveTransitiveDependencies, excludedTransitiveDependencies);
         }
     }
 }

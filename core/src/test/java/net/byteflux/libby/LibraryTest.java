@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -136,5 +137,42 @@ public class LibraryTest {
         assertNotEquals(a, valid().relocate("a", "b").build());
         assertNotEquals(a, valid().version("1.0.1").checksum(CHECKSUM).relocate("a", "b").build());
         assertNotEquals(a, valid().classifier("x").checksum(CHECKSUM).relocate("a", "b").build());
+    }
+
+    @Test
+    public void transitiveDependencySettings() {
+        Library plain = valid().build();
+        Library resolving = valid()
+            .resolveTransitiveDependencies(true)
+            .excludeTransitiveDependency("club{}minnced", "opus-java")
+            .excludeTransitiveDependency(new ExcludedDependency("*", "*"))
+            .build();
+
+        assertFalse(plain.isResolveTransitiveDependencies());
+        assertEquals(List.of(), plain.getExcludedTransitiveDependencies());
+        assertTrue(resolving.isResolveTransitiveDependencies());
+        assertEquals(List.of(new ExcludedDependency("club.minnced", "opus-java"), new ExcludedDependency("*", "*")),
+            resolving.getExcludedTransitiveDependencies());
+        assertThrows(UnsupportedOperationException.class, () -> resolving.getExcludedTransitiveDependencies().clear());
+        assertNotEquals(plain, valid().resolveTransitiveDependencies(true).build());
+        assertNotEquals(valid().excludeTransitiveDependency("a", "b").build(), plain);
+    }
+
+    @Test
+    public void excludedDependencyMatchesWildcards() {
+        assertTrue(new ExcludedDependency("com.example", "lib").matches("com.example", "lib"));
+        assertFalse(new ExcludedDependency("com.example", "lib").matches("com.example", "other"));
+        assertTrue(new ExcludedDependency("com.example", "*").matches("com.example", "anything"));
+        assertFalse(new ExcludedDependency("com.example", "*").matches("com.example.sub", "anything"));
+        assertTrue(new ExcludedDependency("*", "lib").matches("org.any", "lib"));
+        assertTrue(new ExcludedDependency("*", "*").matches("org.any", "thing"));
+        assertEquals("com.example:lib", new ExcludedDependency("com{}example", "lib").toString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "com/example", "com.*", "${group}", " "})
+    public void rejectsInvalidExclusions(String value) {
+        assertThrows(IllegalArgumentException.class, () -> new ExcludedDependency(value, "lib"));
+        assertThrows(IllegalArgumentException.class, () -> new ExcludedDependency("com.example", value));
     }
 }
