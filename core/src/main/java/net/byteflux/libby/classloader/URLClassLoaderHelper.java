@@ -97,6 +97,26 @@ public class URLClassLoaderHelper {
     }
 
     /**
+     * Creates a helper for a plugin's class loader, checking that it is a
+     * {@link URLClassLoader}.
+     *
+     * @param pluginClassLoader the plugin's class loader
+     * @param logger            logger for the chosen strategy, or null
+     * @return new helper
+     * @throws IllegalStateException if the class loader isn't a {@link URLClassLoader}
+     */
+    public static URLClassLoaderHelper forPlugin(ClassLoader pluginClassLoader, @Nullable Logger logger) {
+        requireNonNull(pluginClassLoader, "pluginClassLoader");
+        if (!(pluginClassLoader instanceof URLClassLoader)) {
+            throw new IllegalStateException("The plugin's class loader " + pluginClassLoader.getClass().getName()
+                + " is not a URLClassLoader, so libraries can't be added to it. Use PaperLibraryManager for Paper plugins,"
+                + " or load libraries into an IsolatedClassLoader with LibraryManager#loadLibrary(Library, IsolatedClassLoader).");
+        }
+
+        return new URLClassLoaderHelper((URLClassLoader) pluginClassLoader, logger);
+    }
+
+    /**
      * Adds a URL to the class loader's classpath.
      *
      * @param url the URL to add
