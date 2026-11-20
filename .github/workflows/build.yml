@@ -14,18 +14,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test-jdk: [21, 25]
+        test-jdk: [17, 21, 25]
     steps:
       - uses: actions/checkout@v4
 
       - uses: gradle/actions/wrapper-validation@v4
 
-      # Both JDKs are installed; the last one listed becomes JAVA_HOME and runs Gradle,
+      # All JDKs are installed; the last one listed becomes JAVA_HOME and runs Gradle,
       # which matches the Java 21 build toolchain.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: |
+            17
             25
             21
 
@@ -35,7 +36,7 @@ jobs:
         run: >-
           ./gradlew build
           -Plibby.testJdk=${{ matrix.test-jdk }}
-          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_25_X64
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_21_X64,JAVA_HOME_25_X64
           -Porg.gradle.java.installations.auto-download=false
 
       - name: Upload test reports
