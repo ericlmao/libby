@@ -35,8 +35,17 @@ tasks.withType<Javadoc>().configureEach {
     }
 }
 
+// Tests run on the build toolchain (Java 21) unless -Plibby.testJdk=<version> selects another
+// installed JDK, which CI uses to also test on the newest Java release.
+val testJdk = providers.gradleProperty("libby.testJdk")
+
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    if (testJdk.isPresent) {
+        javaLauncher = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(testJdk.get())
+        }
+    }
 }
 
 tasks.withType<AbstractArchiveTask>().configureEach {
