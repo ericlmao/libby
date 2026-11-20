@@ -32,13 +32,26 @@ import java.util.Map;
  * Elements are matched by local name, so POMs with or without the Maven
  * namespace (or with a namespace prefix) are accepted. Only the direct
  * children of {@code <project>} that the resolver needs are read; plugin
- * dependencies, reporting and build sections are ignored.
+ * dependencies, reporting and build sections are ignored. Elements may be
+ * nested at most {@value #MAX_ELEMENT_DEPTH} levels deep.
  */
 final class PomParser {
     /**
      * Maximum size of a POM file in bytes (1 MiB)
      */
     static final int MAX_POM_SIZE = 1024 * 1024;
+
+    /**
+     * Maximum nesting depth of elements in a POM, enforced by the XML parser
+     * so that deeply nested documents can't exhaust the stack while their
+     * text is read
+     */
+    static final int MAX_ELEMENT_DEPTH = 64;
+
+    /**
+     * JDK XML parser property limiting the element depth
+     */
+    private static final String MAX_ELEMENT_DEPTH_PROPERTY = "http://www.oracle.com/xml/jaxp/properties/maxElementDepth";
 
     /**
      * Error handler that turns every error into an exception and ignores
@@ -223,7 +236,8 @@ final class PomParser {
 
     /**
      * Creates a document builder with external entities, DTDs, schemas and
-     * XIncludes disabled and document type declarations rejected.
+     * XIncludes disabled, document type declarations rejected and the element
+     * depth limited.
      *
      * @return the document builder
      * @throws ParserConfigurationException if a security feature isn't supported
@@ -238,6 +252,7 @@ final class PomParser {
         factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
         factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
         factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        factory.setAttribute(MAX_ELEMENT_DEPTH_PROPERTY, String.valueOf(MAX_ELEMENT_DEPTH));
         factory.setXIncludeAware(false);
         factory.setExpandEntityReferences(false);
         factory.setNamespaceAware(false);

@@ -68,8 +68,12 @@ import static java.util.Objects.requireNonNull;
  * To stay safe with untrusted POMs, a resolution is limited to a depth of
  * {@value #MAX_DEPTH}, {@value #MAX_ARTIFACTS} artifacts,
  * {@value ModelBuilder#MAX_CHAIN_LENGTH} POMs per parent and BOM import chain
- * and {@value ModelBuilder#MAX_DOCUMENTS} POMs in total, and POMs are parsed
- * with a hardened XML parser that rejects document type declarations.
+ * and {@value ModelBuilder#MAX_DOCUMENTS} POMs in total. Interpolating a value
+ * may take at most {@value ModelBuilder#MAX_INTERPOLATION_LOOKUPS} property
+ * lookups and produce at most {@value ModelBuilder#MAX_INTERPOLATED_LENGTH}
+ * characters. POMs are parsed with a hardened XML parser that rejects document
+ * type declarations and elements nested more than
+ * {@value PomParser#MAX_ELEMENT_DEPTH} levels deep.
  * <p>
  * This is an internal class and not part of the stable API; use
  * {@link net.byteflux.libby.LibraryManager#resolveTransitiveLibraries(Library)}.

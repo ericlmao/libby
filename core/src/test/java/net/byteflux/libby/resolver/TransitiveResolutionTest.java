@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TransitiveResolutionTest {
@@ -190,6 +192,45 @@ public class TransitiveResolutionTest {
         repo.artifact("com.example:root:1.0", "<properties><a>${b}</a><b>${a}</b></properties>" + dependencies(dependency("com.example:a:${a}")));
 
         assertTrue(resolveFails("com.example:root:1.0").getMessage().contains("unresolved property"));
+    }
+
+    @Test
+    public void exponentialPropertyExpansionFailsFast() {
+        repo.artifact("com.example:root:1.0", fanOutProperties("x", 16) + dependencies(dependency("com.example:a:${p16}")));
+
+        TransitiveDependencyException e = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> resolveFails("com.example:root:1.0"));
+        assertTrue(e.getMessage().contains("interpolating"), e.getMessage());
+    }
+
+    @Test
+    public void overlongInterpolatedValueThrows() {
+        repo.artifact("com.example:root:1.0", "<properties><p0>" + "x".repeat(1000) + "</p0><p1>" + "${p0}".repeat(5) + "</p1></properties>"
+            + dependencies(dependency("com.example:a:${p1}")));
+
+        TransitiveDependencyException e = resolveFails("com.example:root:1.0");
+        assertTrue(e.getMessage().contains("more than 4096 characters"), e.getMessage());
+    }
+
+    @Test
+    public void exponentialExpansionOfEmptyPropertiesFailsFast() {
+        // 15 levels so that every reference resolves within the nesting limit
+        repo.artifact("com.example:root:1.0", fanOutProperties("", 15) + dependencies(dependency("com.example:a:1${p15}")));
+
+        TransitiveDependencyException e = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> resolveFails("com.example:root:1.0"));
+        assertTrue(e.getMessage().contains("property lookups"), e.getMessage());
+    }
+
+    /**
+     * Properties p1 to p{@code levels} that each reference the previous one
+     * 50 times, so that {@code ${p16}} would expand to 50^16 copies of
+     * {@code p0}.
+     */
+    private static String fanOutProperties(String p0, int levels) {
+        StringBuilder properties = new StringBuilder("<properties><p0>").append(p0).append("</p0>");
+        for (int i = 1; i <= levels; i++) {
+            properties.append("<p").append(i).append('>').append(("${p" + (i - 1) + '}').repeat(50)).append("</p").append(i).append('>');
+        }
+        return properties.append("</properties>").toString();
     }
 
     @Test
@@ -520,6 +561,16 @@ public class TransitiveResolutionTest {
             + "<project><artifactId>&lol2;</artifactId></project>");
 
         assertTrue(resolveFails("com.example:root:1.0").getMessage().contains("DOCTYPE"));
+    }
+
+    @Test
+    public void rejectsDeeplyNestedPoms() {
+        repo.artifact("com.example:root:1.0", "<properties><deep>" + "<a>".repeat(10_000) + "x" + "</a>".repeat(10_000) + "</deep></properties>"
+            + dependencies(dependency("com.example:a:${deep}")));
+
+        TransitiveDependencyException e = resolveFails("com.example:root:1.0");
+        assertTrue(e.getMessage().contains("is invalid"), e.getMessage());
+        assertTrue(e.getMessage().contains("maxElementDepth"), e.getMessage());
     }
 
     @Test

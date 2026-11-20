@@ -350,6 +350,7 @@ the POM features plugins commonly depend on:
 | `SNAPSHOT` versions of transitive dependencies                                                    |
 | POMs that can't be downloaded or parsed; POMs larger than 1 MiB                                   |
 | Trees deeper than 16 levels, more than 256 artifacts or parent/BOM chains longer than 64 POMs     |
+| Property values that expand to more than 4096 characters or need more than 1024 property lookups |
 
 Profiles activated by JDK, OS, property or file conditions are ignored. The exception message
 names the dependency path from your library to the problem and the exact
@@ -395,8 +396,9 @@ Libby downloads code that will run inside your server, so it is strict by defaul
   atomically, and coordinates are validated so paths can't escape the library directory.
 - **Hardened POM parsing.** The transitive resolver rejects POMs with a `DOCTYPE` (so no
   external or internal entities are ever processed), never loads external DTDs, schemas
-  or XIncludes, uses the JDK's built-in parser, limits POMs to 1 MiB and bounds the depth
-  and size of the dependency tree.
+  or XIncludes, uses the JDK's built-in parser, limits POMs to 1 MiB and 64 levels of
+  element nesting, bounds property expansion and bounds the depth and size of the
+  dependency tree.
 - **No other code is executed.** The only third-party code libby downloads and runs itself
   is [jar-relocator](https://github.com/lucko/jar-relocator) and ASM, and only when a
   library has relocations. They are downloaded with pinned SHA-256 checksums and loaded

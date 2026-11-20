@@ -48,6 +48,16 @@ final class ModelBuilder {
     static final int MAX_INTERPOLATION_DEPTH = 16;
 
     /**
+     * Maximum length of an interpolated value
+     */
+    static final int MAX_INTERPOLATED_LENGTH = 4096;
+
+    /**
+     * Maximum number of property lookups while interpolating one value
+     */
+    static final int MAX_INTERPOLATION_LOOKUPS = 1024;
+
+    /**
      * Downloads POM files
      */
     private final PomSource source;
@@ -375,8 +385,9 @@ final class ModelBuilder {
      * @param raw          the dependency as written
      * @param interpolator the interpolator to use
      * @return the interpolated dependency
+     * @throws ModelException if a value expands beyond the interpolation limits
      */
-    private static Dependency interpolate(RawDependency raw, Interpolator interpolator) {
+    private static Dependency interpolate(RawDependency raw, Interpolator interpolator) throws ModelException {
         List<ExcludedDependency> exclusions = new ArrayList<>();
         for (Coordinates exclusion : raw.exclusions()) {
             String groupId = interpolator.interpolate(exclusion.groupId());
@@ -450,7 +461,15 @@ final class ModelBuilder {
     /**
      * Resolves {@code ${...}} expressions against model values and
      * properties. Unknown expressions, including environment variables and
-     * system properties, are left unchanged.
+     * system properties, are left unchanged, as are self-referencing
+     * properties.
+     * <p>
+     * Expansion is bounded so that a small POM can't make it run for a long
+     * time or build huge strings: properties may be nested up to
+     * {@value #MAX_INTERPOLATION_DEPTH} levels deep, interpolating one value
+     * may look up at most {@value #MAX_INTERPOLATION_LOOKUPS} expressions and
+     * the result may be at most {@value #MAX_INTERPOLATED_LENGTH} characters
+     * long.
      */
     private static final class Interpolator {
         /**
@@ -463,6 +482,16 @@ final class ModelBuilder {
          * expressions
          */
         private final Map<String, String> project;
+
+        /**
+         * Properties currently being expanded, to detect cycles
+         */
+        private final Set<String> visiting = new HashSet<>();
+
+        /**
+         * Expressions looked up for the value currently being interpolated
+         */
+        private int lookups;
 
         /**
          * Creates a new interpolator.
@@ -480,19 +509,27 @@ final class ModelBuilder {
          *
          * @param value the value, or null
          * @return the interpolated value, or null if {@code value} is null
+         * @throws ModelException if the value expands beyond the limits
          */
-        private @Nullable String interpolate(@Nullable String value) {
-            return value != null ? interpolate(value, 0) : null;
+        private @Nullable String interpolate(@Nullable String value) throws ModelException {
+            if (value == null) {
+                return null;
+            }
+
+            lookups = 0;
+            visiting.clear();
+            return interpolate(value, value);
         }
 
         /**
          * Interpolates a value.
          *
-         * @param value the value
-         * @param depth current property nesting depth
+         * @param value    the value
+         * @param original the value being interpolated at the top level, for messages
          * @return the interpolated value
+         * @throws ModelException if the value expands beyond the limits
          */
-        private String interpolate(String value, int depth) {
+        private String interpolate(String value, String original) throws ModelException {
             int start = value.indexOf("${");
             if (start < 0) {
                 return value;
@@ -507,34 +544,75 @@ final class ModelBuilder {
                 }
 
                 result.append(value, index, start);
-                String replacement = lookup(value.substring(start + 2, end), depth);
-                result.append(replacement != null ? replacement : value.substring(start, end + 1));
+                String replacement = lookup(value.substring(start + 2, end), original);
+                if (replacement != null) {
+                    result.append(replacement);
+                } else {
+                    result.append(value, start, end + 1);
+                }
+                requireLength(result, original);
                 index = end + 1;
                 start = value.indexOf("${", index);
             }
 
-            return result.append(value, index, value.length()).toString();
+            result.append(value, index, value.length());
+            requireLength(result, original);
+            return result.toString();
         }
 
         /**
          * Looks up the value of an expression.
          *
-         * @param name  the expression without {@code ${}} and {@code }}
-         * @param depth current property nesting depth
-         * @return the value, or null if unknown
+         * @param name     the expression without {@code ${}} and {@code }}
+         * @param original the value being interpolated at the top level, for messages
+         * @return the value, or null if unknown, too deeply nested or self-referencing
+         * @throws ModelException if the value expands beyond the limits
          */
-        private @Nullable String lookup(String name, int depth) {
+        private @Nullable String lookup(String name, String original) throws ModelException {
+            if (++lookups > MAX_INTERPOLATION_LOOKUPS) {
+                throw new ModelException("interpolating '" + abbreviate(original) + "' needs more than "
+                    + MAX_INTERPOLATION_LOOKUPS + " property lookups", null);
+            }
+
             String value = project.get(name);
             if (value != null) {
                 return value;
             }
 
             value = properties.get(name);
-            if (value == null || depth >= MAX_INTERPOLATION_DEPTH) {
+            if (value == null || visiting.size() >= MAX_INTERPOLATION_DEPTH || !visiting.add(name)) {
                 return null;
             }
 
-            return interpolate(value, depth + 1);
+            try {
+                return interpolate(value, original);
+            } finally {
+                visiting.remove(name);
+            }
+        }
+
+        /**
+         * Checks that an interpolated value isn't too long.
+         *
+         * @param result   the value so far
+         * @param original the value being interpolated at the top level, for messages
+         * @throws ModelException if the value is too long
+         */
+        private static void requireLength(StringBuilder result, String original) throws ModelException {
+            if (result.length() > MAX_INTERPOLATED_LENGTH) {
+                throw new ModelException("interpolating '" + abbreviate(original) + "' produces more than "
+                    + MAX_INTERPOLATED_LENGTH + " characters", null);
+            }
+        }
+
+        /**
+         * Shortens a value for messages.
+         *
+         * @param value the value
+         * @return the value, cut to at most 64 characters
+         */
+        private static String abbreviate(String value) {
+            return value.length() <= 64 ? value : value.substring(0, 61) + "...";
         }
     }
 
