@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -25,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class LibraryManagerDownloadTest {
@@ -310,6 +312,145 @@ public class LibraryManagerDownloadTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    public void stalledDownloadTimesOutAndTriesNextRepository() throws IOException {
+        byte[] jar = TestJars.simpleJar("good");
+        try (TestHttpRepository other = new TestHttpRepository()) {
+            http.putStalled(PATH, new byte[16]);
+            other.put(PATH, jar);
+            manager.addRepository(http.url());
+            manager.addRepository(other.url());
+            manager.setDownloadTimeout(Duration.ofMillis(500));
+
+            Path file = assertTimeoutPreemptively(Duration.ofSeconds(20), () -> manager.downloadLibrary(library().checksum(sha256(jar)).build()));
+
+            assertArrayEquals(jar, Files.readAllBytes(file));
+            assertEquals(1, http.requests(PATH));
+            assertEquals(1, manager.log().count(LogLevel.DEBUG, "Couldn't download " + http.url() + PATH + ": timed out after 500 ms"));
+            assertTrue(partFiles().isEmpty());
+        }
+
+        List<Thread> watchdogs = Thread.getAllStackTraces().keySet().stream()
+            .filter(thread -> thread.getName().equals("libby-download-watchdog"))
+            .collect(Collectors.toList());
+        assertEquals(1, watchdogs.size(), watchdogs.toString());
+        assertTrue(watchdogs.get(0).isDaemon());
+    }
+
+    @Test
+    public void stalledChecksumFileTimesOutAndTriesNextRepository() throws IOException {
+        byte[] jar = TestJars.simpleJar("good");
+        try (TestHttpRepository other = new TestHttpRepository()) {
+            http.put(PATH, TestJars.simpleJar("unverified"));
+            http.putStalled(PATH + ".sha256", new byte[8]);
+            other.put(PATH, jar);
+            other.put(PATH + ".sha256", TestJars.hex(sha256(jar)).getBytes(StandardCharsets.US_ASCII));
+            manager.addRepository(http.url());
+            manager.addRepository(other.url());
+            manager.setDownloadTimeout(Duration.ofMillis(500));
+
+            Path file = assertTimeoutPreemptively(Duration.ofSeconds(20), () -> manager.downloadLibrary(library().build()));
+
+            assertArrayEquals(jar, Files.readAllBytes(file));
+            assertEquals(0, http.requests(PATH), "the jar isn't downloaded without its checksum");
+        }
+    }
+
+    @Test
+    public void downloadTimeoutDefaultsAndValidation() {
+        assertEquals(Duration.ofMinutes(5), manager.getDownloadTimeout());
+        assertThrows(IllegalArgumentException.class, () -> manager.setDownloadTimeout(Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> manager.setDownloadTimeout(Duration.ofSeconds(-1)));
+    }
+
+    @Test
+    public void checksumFileErrorFailsTheAttemptInsteadOfSkippingVerification() throws IOException {
+        byte[] jar = TestJars.simpleJar("good");
+        try (TestHttpRepository other = new TestHttpRepository()) {
+            http.put(PATH, TestJars.simpleJar("tampered"));
+            http.putStatus(PATH + ".sha256", 503, "<html>Unavailable</html>".getBytes(StandardCharsets.UTF_8));
+            other.put(PATH, jar);
+            other.put(PATH + ".sha1", TestJars.hex(TestJars.digest("SHA-1", jar)).getBytes(StandardCharsets.US_ASCII));
+            manager.addRepository(http.url());
+            manager.addRepository(other.url());
+
+            Path file = manager.downloadLibrary(library().build());
+
+            assertArrayEquals(jar, Files.readAllBytes(file));
+            assertEquals(0, http.requests(PATH));
+            assertEquals(0, http.requests(PATH + ".sha512"), "an error isn't treated like a missing checksum file");
+            assertEquals(0, manager.log().count(LogLevel.WARN, "No checksum available"));
+        }
+    }
+
+    @Test
+    public void checksumFileErrorIsReportedWhenNoUrlWorks() {
+        http.put(PATH, TestJars.simpleJar("good"));
+        http.putStatus(PATH + ".sha256", 403, new byte[0]);
+        manager.addRepository(http.url());
+
+        LibraryDownloadException e = assertThrows(LibraryDownloadException.class, () -> manager.downloadLibrary(library().build()));
+
+        assertEquals("checksum file " + http.url() + PATH + ".sha256: unexpected HTTP status 403", e.getAttempts().get(0).reason());
+        assertFalse(Files.exists(target()));
+        assertEquals(0, manager.log().count(LogLevel.WARN, "No checksum available"));
+    }
+
+    @Test
+    public void legacyCacheIsNotTrustedWhenChecksumFilesFail() throws IOException {
+        byte[] jar = TestJars.simpleJar("good");
+        Files.createDirectories(target().getParent());
+        Files.write(target(), jar);
+        http.put(PATH, jar);
+        http.putStatus(PATH + ".sha256", 500, new byte[0]);
+        manager.addRepository(http.url());
+
+        assertThrows(LibraryDownloadException.class, () -> manager.downloadLibrary(library().build()));
+
+        assertFalse(Files.exists(target().resolveSibling("lib-1.0.jar.sha256")), "the cached jar must not be recorded as verified");
+        assertEquals(1, manager.log().count(LogLevel.WARN, "because its checksum files couldn't be fetched"));
+        assertEquals(0, http.requests(PATH));
+
+        // Once the repository answers that there is no checksum file, the cached jar is accepted with a warning.
+        http.putStatus(PATH + ".sha256", 404, new byte[0]);
+        assertEquals(target(), manager.downloadLibrary(library().build()));
+        assertTrue(Files.exists(target().resolveSibling("lib-1.0.jar.sha256")));
+        assertEquals(1, manager.log().count(LogLevel.WARN, "No checksum available"));
+        assertEquals(0, http.requests(PATH));
+    }
+
+    @Test
+    public void legacyCacheIsVerifiedAgainstRepositoryChecksum() throws IOException {
+        byte[] jar = TestJars.simpleJar("good");
+        Files.createDirectories(target().getParent());
+        Files.write(target(), "tampered".getBytes(StandardCharsets.UTF_8));
+        http.put(PATH, jar);
+        http.put(PATH + ".sha256", TestJars.hex(sha256(jar)).getBytes(StandardCharsets.US_ASCII));
+        manager.addRepository(http.url());
+
+        manager.downloadLibrary(library().build());
+
+        assertArrayEquals(jar, Files.readAllBytes(target()));
+        assertEquals(1, http.requests(PATH));
+    }
+
+    @Test
+    public void hostlessUrlsAreSkipped() throws IOException {
+        byte[] jar = TestJars.simpleJar("good");
+        http.put(PATH, jar);
+        manager.addRepository(http.url());
+
+        LibraryDownloadException none = assertThrows(LibraryDownloadException.class,
+            () -> manager.downloadLibrary(library().build(), List.of("https:foo", "https:///lib.jar", "http://")));
+        assertEquals(List.of("invalid URL", "invalid URL", "invalid URL"),
+            none.getAttempts().stream().map(LibraryDownloadException.Attempt::reason).collect(Collectors.toList()));
+
+        Path file = manager.downloadLibrary(library().url("https:foo").url("https:///lib.jar").checksum(sha256(jar)).build());
+
+        assertArrayEquals(jar, Files.readAllBytes(file));
+        assertEquals(1, http.requests(PATH));
     }
 
     @Test

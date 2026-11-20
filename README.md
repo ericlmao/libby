@@ -387,13 +387,19 @@ Libby downloads code that will run inside your server, so it is strict by defaul
   download against the repository's `.sha256`, `.sha512` or `.sha1` file. Those checksum
   files come from the same repository as the jar, so they only protect against corruption
   and broken mirrors, **not against a malicious or compromised repository**. Pin checksums
-  for anything that matters. A warning is logged when no checksum is available at all.
+  for anything that matters. Only a checksum file that doesn't exist (HTTP 404 or 410) is
+  skipped; any other error fetching one (another HTTP status, a timeout, an I/O error) fails
+  that URL and the next one is tried. If the repository has no checksum file at all, the
+  download is accepted and a warning is logged.
 - **Verified cache.** Every downloaded file gets its SHA-256 recorded in a `.sha256` sidecar.
   Cached jars, relocated jars and POMs are re-verified on every start and downloaded again
-  if they don't match.
+  if they don't match. Files cached without a sidecar (by older libby versions) are checked
+  against the repository's checksum files, and downloaded again rather than trusted if those
+  can't be fetched.
 - **Safe downloads.** Only HTTP 200 responses are accepted (error pages are never cached),
-  downloads are streamed to a temporary file with a size limit and moved into place
-  atomically, and coordinates are validated so paths can't escape the library directory.
+  downloads are streamed to a temporary file with a size limit and a time limit and moved
+  into place atomically, and coordinates are validated so paths can't escape the library
+  directory.
 - **Hardened POM parsing.** The transitive resolver rejects POMs with a `DOCTYPE` (so no
   external or internal entities are ever processed), never loads external DTDs, schemas
   or XIncludes, uses the JDK's built-in parser, limits POMs to 1 MiB and 64 levels of
@@ -434,7 +440,8 @@ To avoid these workarounds entirely:
 |-------------------------------------------|----------------|--------------------------------------------------------------|
 | `setLogLevel(LogLevel)`                   | `INFO`         | `WARN` hides download messages but keeps checksum warnings; `DEBUG` shows the dependency tree |
 | `setConnectTimeout(Duration)`             | 10 seconds     | Time to establish a connection                               |
-| `setRequestTimeout(Duration)`             | 30 seconds     | Time to receive the response headers (body streaming isn't limited) |
+| `setRequestTimeout(Duration)`             | 30 seconds     | Time to receive the response headers                         |
+| `setDownloadTimeout(Duration)`            | 5 minutes      | Time to download a jar from one URL, including the body; a stalled or trickling download is aborted and the next URL is tried. POMs and checksum files get the shorter of this and 30 seconds |
 | `setMaxDownloadSize(long)`                | 256 MiB        | Larger downloads are aborted and the next URL is tried       |
 | `setAllowInsecureHttp(boolean)`           | `false`        | See [Security model](#security-model)                        |
 | Library directory name                    | `lib`          | Pass it to the constructor, e.g. `new BukkitLibraryManager(this, "libraries")` or `new PaperLibraryManager(classpathBuilder, "libraries")` |

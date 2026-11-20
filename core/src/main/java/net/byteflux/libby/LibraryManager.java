@@ -57,9 +57,12 @@ import static java.util.Objects.requireNonNull;
  * plugins or maybe even bundled with the server itself.
  * <p>
  * Downloads are only made over {@code https:} or from {@code file:} URLs
- * unless {@link #setAllowInsecureHttp(boolean)} is enabled, and every
- * download is verified against the library's pinned checksum or, if it has
- * none, the repository's checksum files. Library managers are thread-safe.
+ * unless {@link #setAllowInsecureHttp(boolean)} is enabled. A download is
+ * verified against the library's pinned checksum or, if it has none, the
+ * first checksum file the repository publishes next to it. If the
+ * repository has no checksum file at all, the download is accepted
+ * unverified with a warning; if a checksum file can't be fetched because of
+ * an error, that URL is skipped. Library managers are thread-safe.
  *
  * @see Library
  */
@@ -245,12 +248,36 @@ public abstract class LibraryManager {
 
     /**
      * Sets the timeout for receiving the status and headers of a response.
-     * The time spent streaming the response body isn't limited.
+     * Streaming the response body is limited by the
+     * {@linkplain #setDownloadTimeout(Duration) download timeout}.
      *
      * @param requestTimeout positive request timeout
      */
     public void setRequestTimeout(Duration requestTimeout) {
         downloader.setRequestTimeout(requestTimeout);
+    }
+
+    /**
+     * Gets the time limit for downloading a library jar from one URL.
+     *
+     * @return download timeout, 5 minutes by default
+     * @see #setDownloadTimeout(Duration)
+     */
+    public Duration getDownloadTimeout() {
+        return downloader.getDownloadTimeout();
+    }
+
+    /**
+     * Sets the time limit for downloading a library jar from one URL,
+     * including streaming its body, so that a server that stalls or sends
+     * data very slowly can't block loading forever. A download that takes
+     * longer is aborted and the next URL is attempted. POMs and checksum
+     * files are limited to the shorter of this and 30 seconds.
+     *
+     * @param downloadTimeout positive download timeout
+     */
+    public void setDownloadTimeout(Duration downloadTimeout) {
+        downloader.setDownloadTimeout(downloadTimeout);
     }
 
     /**
@@ -440,12 +467,17 @@ public abstract class LibraryManager {
      * or if it has none, against the first checksum file ({@code .sha256},
      * {@code .sha512} or {@code .sha1}) found next to the artifact. If
      * verification fails, a warning is generated and the next download URL is
-     * attempted. A warning is logged if no checksum is available at all.
+     * attempted. The next URL is also attempted if a checksum file can't be
+     * fetched for another reason than not existing (an HTTP error other than
+     * 404 or 410, a timeout or an I/O error). If none of the checksum files
+     * exists, the jar is accepted and a warning is logged.
      * <p>
      * Cached jars are re-verified against the pinned checksum, or the
      * checksum recorded when they were downloaded, and downloaded again if
-     * they don't match. Concurrent calls for the same library download it
-     * only once.
+     * they don't match. Jars cached without a recorded checksum are verified
+     * against the repository's checksum files and downloaded again if that
+     * isn't possible because of an error. Concurrent calls for the same
+     * library download it only once.
      * <p>
      * Most of the time it is advised to use {@link #loadLibrary(Library)}
      * instead of this method because this one is only concerned with

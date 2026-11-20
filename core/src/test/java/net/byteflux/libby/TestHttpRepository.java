@@ -46,15 +46,23 @@ public final class TestHttpRepository implements AutoCloseable {
     }
 
     public void put(String path, byte[] body) {
-        responses.put("/repo/" + path, new Response(200, body, false));
+        responses.put("/repo/" + path, new Response(200, body, false, false));
     }
 
     public void putChunked(String path, byte[] body) {
-        responses.put("/repo/" + path, new Response(200, body, true));
+        responses.put("/repo/" + path, new Response(200, body, true, false));
     }
 
     public void putStatus(String path, int status, byte[] body) {
-        responses.put("/repo/" + path, new Response(status, body, false));
+        responses.put("/repo/" + path, new Response(status, body, false, false));
+    }
+
+    /**
+     * Answers with the headers and the first bytes of a longer body, then
+     * stalls until the server is closed.
+     */
+    public void putStalled(String path, byte[] body) {
+        responses.put("/repo/" + path, new Response(200, body, false, true));
     }
 
     public void setDelayMillis(long delayMillis) {
@@ -81,7 +89,21 @@ public final class TestHttpRepository implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
 
-        Response response = responses.getOrDefault(path, new Response(404, "<html>Not Found</html>".getBytes(), false));
+        Response response = responses.getOrDefault(path, new Response(404, "<html>Not Found</html>".getBytes(), false, false));
+        if (response.stall) {
+            exchange.sendResponseHeaders(response.status, response.body.length + 1024L);
+            OutputStream out = exchange.getResponseBody();
+            out.write(response.body);
+            out.flush();
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.close();
+            return;
+        }
+
         exchange.sendResponseHeaders(response.status, response.chunked ? 0 : response.body.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(response.body);
@@ -94,6 +116,6 @@ public final class TestHttpRepository implements AutoCloseable {
         executor.shutdownNow();
     }
 
-    private record Response(int status, byte[] body, boolean chunked) {
+    private record Response(int status, byte[] body, boolean chunked, boolean stall) {
     }
 }

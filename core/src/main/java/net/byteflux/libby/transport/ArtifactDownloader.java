@@ -41,13 +41,21 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * Integrity is verified against the library's pinned SHA-256 checksum if it
  * has one, otherwise against the first checksum file found next to the
- * artifact ({@code .sha256}, {@code .sha512}, then {@code .sha1}). Every
- * installed file gets its SHA-256 checksum recorded in a {@code .sha256}
- * sidecar so cached files can be re-verified later.
+ * artifact ({@code .sha256}, {@code .sha512}, then {@code .sha1}). Only a
+ * checksum file that doesn't exist (HTTP 404 or 410, or a missing
+ * {@code file:} file) is skipped; any other error while fetching one fails
+ * the attempt, so that the next URL is tried instead of installing an
+ * unverified file. If no checksum file exists at all, the file is installed
+ * with a warning. Every installed file gets its SHA-256 checksum recorded in
+ * a {@code .sha256} sidecar so cached files can be re-verified later.
+ * <p>
+ * Each transfer is limited by a deadline that also covers streaming the
+ * body, so a server that stalls or trickles data can't block the caller
+ * forever.
  * <p>
  * Small files such as POMs are downloaded with
  * {@link #downloadFile(String, Collection, Path, long)}, which applies the same
- * policy with a smaller size limit.
+ * policy with a smaller size limit and time limit.
  * <p>
  * This class does not lock: callers must make sure only one thread downloads
  * to a given target path at a time. It is an internal class and not part of
@@ -68,6 +76,18 @@ public final class ArtifactDownloader {
      * Default timeout for receiving a response
      */
     public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * Default time limit for downloading a library jar, including streaming
+     * its body
+     */
+    public static final Duration DEFAULT_DOWNLOAD_TIMEOUT = Duration.ofMinutes(5);
+
+    /**
+     * Time limit for downloading a small file such as a POM or a checksum
+     * file, unless the download timeout is shorter
+     */
+    public static final Duration SMALL_FILE_TIMEOUT = Duration.ofSeconds(30);
 
     /**
      * Maximum size of a remote checksum file
@@ -113,6 +133,11 @@ public final class ArtifactDownloader {
      * Timeout for receiving a response
      */
     private volatile Duration requestTimeout = DEFAULT_REQUEST_TIMEOUT;
+
+    /**
+     * Time limit for downloading a library jar
+     */
+    private volatile Duration downloadTimeout = DEFAULT_DOWNLOAD_TIMEOUT;
 
     /**
      * Maximum size of a downloaded file in bytes
@@ -186,6 +211,29 @@ public final class ArtifactDownloader {
     }
 
     /**
+     * Gets the time limit for downloading a library jar from one URL,
+     * including streaming its body.
+     *
+     * @return download timeout
+     */
+    public Duration getDownloadTimeout() {
+        return downloadTimeout;
+    }
+
+    /**
+     * Sets the time limit for downloading a library jar from one URL,
+     * including streaming its body. A download that takes longer is aborted
+     * and the next URL is attempted. Small files such as POMs and checksum
+     * files are limited to the shorter of this and
+     * {@link #SMALL_FILE_TIMEOUT}.
+     *
+     * @param downloadTimeout positive download timeout
+     */
+    public void setDownloadTimeout(Duration downloadTimeout) {
+        this.downloadTimeout = requirePositive(downloadTimeout, "downloadTimeout");
+    }
+
+    /**
      * Gets the maximum size of a downloaded file.
      *
      * @return maximum size in bytes
@@ -219,7 +267,7 @@ public final class ArtifactDownloader {
      */
     public Path download(Library library, Collection<String> urls, Path target) {
         requireNonNull(library, "library");
-        return download(new Request(library.toString(), library.getChecksum(), maxDownloadSize, false), urls, target);
+        return download(new Request(library.toString(), library.getChecksum(), maxDownloadSize, false, downloadTimeout), urls, target);
     }
 
     /**
@@ -229,7 +277,9 @@ public final class ArtifactDownloader {
      * <p>
      * The same URL scheme policy, status handling, checksum file verification
      * and checksum recording as for library jars apply, but downloads and
-     * missing checksum files are only logged at debug level.
+     * missing checksum files are only logged at debug level, and each
+     * download is limited to the shorter of the download timeout and
+     * {@link #SMALL_FILE_TIMEOUT}.
      *
      * @param name    name of the file used in messages, such as {@code g:a:v (pom)}
      * @param urls    candidate download URLs in order of preference
@@ -244,7 +294,7 @@ public final class ArtifactDownloader {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize must be positive");
         }
-        return download(new Request(name, null, Math.min(maxSize, maxDownloadSize), true), urls, target);
+        return download(new Request(name, null, Math.min(maxSize, maxDownloadSize), true, smallFileTimeout()), urls, target);
     }
 
     /**
@@ -300,6 +350,12 @@ public final class ArtifactDownloader {
     /**
      * Checks whether a cached copy of a file can be used, deleting it if it
      * fails a known checksum.
+     * <p>
+     * A file cached without a recorded checksum is verified against the
+     * repositories' checksum files. It's only trusted without verification
+     * if none of the repositories has a checksum file; if a checksum file
+     * couldn't be fetched because of an error, the file isn't trusted and
+     * is downloaded again.
      *
      * @param request what is being downloaded
      * @param urls    candidate download URLs, used to look up checksums for
@@ -344,6 +400,7 @@ public final class ArtifactDownloader {
 
         // Cached without a recorded checksum (e.g. by an older libby version):
         // verify it against the repository's checksum files if possible.
+        boolean lookupFailed = false;
         for (String url : urls) {
             URI uri = toUri(url);
             if (uri == null || !isAllowedScheme(uri)) {
@@ -353,9 +410,13 @@ public final class ArtifactDownloader {
             ExpectedChecksum expected;
             try {
                 expected = fetchRemoteChecksum(uri);
+            } catch (AttemptFailedException e) {
+                logger.debug("Couldn't verify cached " + target + " against " + url + ": " + e.getMessage());
+                lookupFailed = true;
+                continue;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                break;
+                return false;
             }
 
             if (expected != null) {
@@ -369,6 +430,12 @@ public final class ArtifactDownloader {
                 Checksums.deleteWithRecord(target);
                 return false;
             }
+        }
+
+        if (lookupFailed) {
+            logger.warn("Couldn't verify cached " + (request.quiet ? "file " : "jar ") + target
+                + " because its checksum files couldn't be fetched, downloading it again");
+            return false;
         }
 
         warnUnverified(request);
@@ -407,17 +474,20 @@ public final class ArtifactDownloader {
 
         Path temp = null;
         try {
-            temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".part");
+            Path part = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".part");
+            temp = part;
 
             MessageDigest sha256 = Checksums.newDigest(Checksums.SHA_256);
             MessageDigest verify = expected == null || expected.algorithm == ChecksumAlgorithm.SHA_256
                 ? null
                 : Checksums.newDigest(expected.algorithm.digestName);
 
-            try (InputStream in = open(uri, request.maxSize);
-                 OutputStream out = Files.newOutputStream(temp)) {
-                copy(in, out, request.maxSize, sha256, verify);
-            }
+            transfer(uri, request.maxSize, request.timeout, in -> {
+                try (OutputStream out = Files.newOutputStream(part)) {
+                    copy(in, out, request.maxSize, sha256, verify);
+                }
+                return null;
+            });
 
             byte[] sha256Bytes = sha256.digest();
             if (expected != null) {
@@ -453,21 +523,32 @@ public final class ArtifactDownloader {
 
     /**
      * Looks up a checksum file next to the artifact, trying SHA-256, SHA-512
-     * and then SHA-1.
+     * and then SHA-1. Checksum files that don't exist, are too large or
+     * don't contain a checksum are skipped.
      *
      * @param artifact the artifact URI
      * @return the expected checksum or null if no checksum file is available
-     * @throws InterruptedException if the thread was interrupted
+     * @throws AttemptFailedException if a checksum file couldn't be fetched
+     *                                for another reason than not existing
+     * @throws InterruptedException   if the thread was interrupted
      */
-    private @Nullable ExpectedChecksum fetchRemoteChecksum(URI artifact) throws InterruptedException {
+    private @Nullable ExpectedChecksum fetchRemoteChecksum(URI artifact) throws AttemptFailedException, InterruptedException {
         for (ChecksumAlgorithm algorithm : ChecksumAlgorithm.values()) {
             URI uri = URI.create(artifact + algorithm.extension);
             byte[] body;
-            try (InputStream in = open(uri, MAX_CHECKSUM_FILE_SIZE)) {
-                body = in.readNBytes(MAX_CHECKSUM_FILE_SIZE + 1);
-            } catch (AttemptFailedException | IOException e) {
-                logger.debug("No checksum at " + uri + ": " + e.getMessage());
-                continue;
+            try {
+                // No size limit up front: oversized files are skipped below like malformed ones.
+                body = transfer(uri, Long.MAX_VALUE, smallFileTimeout(), in -> in.readNBytes(MAX_CHECKSUM_FILE_SIZE + 1));
+            } catch (AttemptFailedException e) {
+                if (e.notFound) {
+                    logger.debug("No checksum at " + uri + ": " + e.getMessage());
+                    continue;
+                }
+                throw new AttemptFailedException("checksum file " + uri + ": " + e.getMessage());
+            } catch (HttpTimeoutException e) {
+                throw new AttemptFailedException("checksum file " + uri + ": timed out");
+            } catch (IOException e) {
+                throw new AttemptFailedException("checksum file " + uri + ": " + e);
             }
             if (body.length > MAX_CHECKSUM_FILE_SIZE) {
                 logger.debug("Ignoring oversized checksum file " + uri);
@@ -487,16 +568,53 @@ public final class ArtifactDownloader {
     }
 
     /**
+     * Reads the resource at a URI within a time limit that covers opening it
+     * and reading its body.
+     *
+     * @param uri     the resource URI, using an allowed scheme
+     * @param maxSize maximum acceptable size in bytes if known up front
+     * @param timeout time limit for the whole transfer
+     * @param reader  reads the opened stream
+     * @param <T>     the result type
+     * @return the reader's result
+     * @throws AttemptFailedException if the resource doesn't exist, can't be
+     *                                used or wasn't read in time
+     * @throws IOException            if an I/O error occurs
+     * @throws InterruptedException   if the thread was interrupted
+     */
+    private <T> T transfer(URI uri, long maxSize, Duration timeout, StreamReader<T> reader)
+        throws AttemptFailedException, IOException, InterruptedException {
+
+        TransferDeadline deadline = TransferDeadline.start(timeout);
+        try (InputStream in = open(uri, maxSize, timeout)) {
+            deadline.watch(in);
+            T result = reader.read(in);
+            if (deadline.isExpired()) {
+                throw timedOut(deadline);
+            }
+            return result;
+        } catch (IOException e) {
+            if (deadline.isExpired()) {
+                throw timedOut(deadline);
+            }
+            throw e;
+        } finally {
+            deadline.cancel();
+        }
+    }
+
+    /**
      * Opens a stream to the resource at a {@code file:} or http(s) URI.
      *
      * @param uri     the resource URI, using an allowed scheme
      * @param maxSize maximum acceptable size in bytes if known up front
+     * @param timeout upper limit for receiving the response headers
      * @return an open stream, which the caller must close
      * @throws AttemptFailedException if the resource doesn't exist or can't be used
      * @throws IOException            if an I/O error occurs
      * @throws InterruptedException   if the thread was interrupted
      */
-    private InputStream open(URI uri, long maxSize) throws AttemptFailedException, IOException, InterruptedException {
+    private InputStream open(URI uri, long maxSize, Duration timeout) throws AttemptFailedException, IOException, InterruptedException {
         if ("file".equals(scheme(uri))) {
             Path path;
             try {
@@ -505,7 +623,7 @@ public final class ArtifactDownloader {
                 throw new AttemptFailedException("invalid file URL");
             }
             if (!Files.isRegularFile(path)) {
-                throw new AttemptFailedException("not found");
+                throw AttemptFailedException.notFound("not found");
             }
             if (Files.size(path) > maxSize) {
                 throw new AttemptFailedException("larger than the maximum download size of " + maxSize + " bytes");
@@ -513,18 +631,23 @@ public final class ArtifactDownloader {
             return Files.newInputStream(path);
         }
 
-        HttpRequest request = HttpRequest.newBuilder(uri)
-            .timeout(requestTimeout)
-            .header("User-Agent", LibbyProperties.HTTP_USER_AGENT)
-            .GET()
-            .build();
+        HttpRequest request;
+        try {
+            request = HttpRequest.newBuilder(uri)
+                .timeout(timeout.compareTo(requestTimeout) < 0 ? timeout : requestTimeout)
+                .header("User-Agent", LibbyProperties.HTTP_USER_AGENT)
+                .GET()
+                .build();
+        } catch (IllegalArgumentException e) {
+            throw new AttemptFailedException("invalid URL");
+        }
 
         HttpResponse<InputStream> response = httpClient().send(request, HttpResponse.BodyHandlers.ofInputStream());
         int status = response.statusCode();
         if (status != 200) {
             response.body().close();
             if (status == 404 || status == 410) {
-                throw new AttemptFailedException("not found (HTTP " + status + ')');
+                throw AttemptFailedException.notFound("not found (HTTP " + status + ')');
             }
             throw new AttemptFailedException("unexpected HTTP status " + status);
         }
@@ -613,6 +736,28 @@ public final class ArtifactDownloader {
     }
 
     /**
+     * Gets the time limit for downloading a small file.
+     *
+     * @return the shorter of the download timeout and {@link #SMALL_FILE_TIMEOUT}
+     */
+    private Duration smallFileTimeout() {
+        Duration timeout = downloadTimeout;
+        return timeout.compareTo(SMALL_FILE_TIMEOUT) < 0 ? timeout : SMALL_FILE_TIMEOUT;
+    }
+
+    /**
+     * Creates the failure of a transfer that ran out of time.
+     *
+     * @param deadline the transfer's deadline
+     * @return the failure
+     */
+    private static AttemptFailedException timedOut(TransferDeadline deadline) {
+        Duration timeout = deadline.timeout();
+        String limit = timeout.toMillisPart() == 0 ? timeout.toSeconds() + " s" : timeout.toMillis() + " ms";
+        return new AttemptFailedException("timed out after " + limit);
+    }
+
+    /**
      * Logs a warning, once per library, that a download couldn't be verified.
      * Quiet requests only log at debug level.
      *
@@ -649,18 +794,28 @@ public final class ArtifactDownloader {
     }
 
     /**
-     * Parses an absolute URL.
+     * Parses an absolute URL. {@code http:} and {@code https:} URLs must
+     * have a host.
      *
      * @param url the URL
      * @return the URI, or null if it isn't a valid absolute URL
      */
     private static @Nullable URI toUri(String url) {
+        URI uri;
         try {
-            URI uri = new URI(url);
-            return uri.isAbsolute() ? uri : null;
+            uri = new URI(url);
         } catch (URISyntaxException e) {
             return null;
         }
+        if (!uri.isAbsolute()) {
+            return null;
+        }
+
+        String scheme = scheme(uri);
+        if (("http".equals(scheme) || "https".equals(scheme)) && (uri.getHost() == null || uri.getHost().isEmpty())) {
+            return null;
+        }
+        return uri;
     }
 
     /**
@@ -726,8 +881,27 @@ public final class ArtifactDownloader {
      * @param pinned  pinned SHA-256 checksum, or null to use checksum files
      * @param maxSize maximum size in bytes
      * @param quiet   whether to log routine messages at debug level only
+     * @param timeout time limit for downloading the file from one URL
      */
-    private record Request(String name, byte @Nullable [] pinned, long maxSize, boolean quiet) {
+    private record Request(String name, byte @Nullable [] pinned, long maxSize, boolean quiet, Duration timeout) {
+    }
+
+    /**
+     * Reads an opened stream.
+     *
+     * @param <T> the result type
+     */
+    @FunctionalInterface
+    private interface StreamReader<T> {
+        /**
+         * Reads the stream.
+         *
+         * @param in the stream, closed by the caller
+         * @return the result
+         * @throws AttemptFailedException if the content can't be used
+         * @throws IOException            if an I/O error occurs
+         */
+        T read(InputStream in) throws AttemptFailedException, IOException;
     }
 
     /**
@@ -746,12 +920,39 @@ public final class ArtifactDownloader {
      */
     private static final class AttemptFailedException extends Exception {
         /**
+         * Whether the attempt failed because the resource doesn't exist
+         */
+        private final boolean notFound;
+
+        /**
          * Creates a new attempt failure.
          *
          * @param reason why the attempt failed
          */
         private AttemptFailedException(String reason) {
+            this(reason, false);
+        }
+
+        /**
+         * Creates a new attempt failure.
+         *
+         * @param reason   why the attempt failed
+         * @param notFound whether the resource doesn't exist
+         */
+        private AttemptFailedException(String reason, boolean notFound) {
             super(reason, null, false, false);
+            this.notFound = notFound;
+        }
+
+        /**
+         * Creates the failure of an attempt to fetch a resource that doesn't
+         * exist.
+         *
+         * @param reason why the attempt failed
+         * @return the failure
+         */
+        private static AttemptFailedException notFound(String reason) {
+            return new AttemptFailedException(reason, true);
         }
     }
 }
