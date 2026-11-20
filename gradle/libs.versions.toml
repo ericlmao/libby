@@ -11,7 +11,7 @@ junit = "6.1.3"
 
 # Tools that libby downloads at runtime to relocate jars. They are not compile
 # dependencies: the versions and SHA-256 checksums are pinned in
-# net.byteflux.libby.relocation.RelocationHelper and must be kept in sync with
+# gg.moonrise.libby.relocation.RelocationHelper and must be kept in sync with
 # these entries, which only feed the offline relocation test repository.
 jar-relocator = "1.7"
 asm = "9.11.1"
