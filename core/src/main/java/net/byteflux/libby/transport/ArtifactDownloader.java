@@ -519,13 +519,13 @@ public final class ArtifactDownloader {
 
     /**
      * Moves a verified temporary file to its target, atomically if the file
-     * system supports it.
+     * system supports it, replacing any existing target.
      *
      * @param temp   the temporary file
      * @param target the target file
      * @throws IOException if the file can't be moved
      */
-    private static void install(Path temp, Path target) throws IOException {
+    public static void install(Path temp, Path target) throws IOException {
         try {
             Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {

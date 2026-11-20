@@ -3,9 +3,10 @@ package net.byteflux.libby;
 import net.byteflux.libby.logging.LogLevel;
 import net.byteflux.libby.logging.Logger;
 import net.byteflux.libby.logging.adapters.LogAdapter;
-import net.byteflux.libby.relocation.Relocation;
 import net.byteflux.libby.relocation.RelocationHelper;
 import net.byteflux.libby.transport.ArtifactDownloader;
+import net.byteflux.libby.transport.Checksums;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -13,6 +14,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -94,10 +96,15 @@ public abstract class LibraryManager {
     private final ConcurrentMap<Path, Object> fileLocks = new ConcurrentHashMap<>();
 
     /**
+     * Guards lazy creation of the relocation helper
+     */
+    private final Object relocatorLock = new Object();
+
+    /**
      * Lazily-initialized relocation helper that uses reflection to call into
      * Luck's Jar Relocator
      */
-    private RelocationHelper relocator;
+    private volatile @Nullable RelocationHelper relocator;
 
     /**
      * Creates a new library manager that saves libraries to the
@@ -403,49 +410,74 @@ public abstract class LibraryManager {
     }
 
     /**
-     * Processes the input jar and generates an output jar with the provided
-     * relocation rules applied, then returns the path to the relocated jar.
+     * Applies a library's relocation rules to its downloaded jar, unless a
+     * relocated jar with a matching recorded checksum already exists, and
+     * returns the path to the relocated jar.
      *
-     * @param in          input jar
-     * @param out         output jar
-     * @param relocations relocations to apply
+     * @param library the library being loaded
+     * @param in      the library's downloaded jar
      * @return the relocated file
      * @see RelocationHelper#relocate(Path, Path, Collection)
      */
-    private Path relocate(Path in, String out, Collection<Relocation> relocations) {
-        requireNonNull(in, "in");
-        requireNonNull(out, "out");
-        requireNonNull(relocations, "relocations");
+    private Path relocate(Library library, Path in) {
+        String relocatedPath = requireNonNull(library.getRelocatedPath(), "relocatedPath");
+        Path file = resolveSaveFile(relocatedPath);
 
-        Path file = resolveSaveFile(out);
-        if (Files.exists(file)) {
-            return file;
-        }
+        // Initialize the helper before taking the file lock: it downloads its
+        // own dependencies under their file locks.
+        RelocationHelper helper = relocator();
 
-        Path tmpOut = file.resolveSibling(file.getFileName() + ".tmp");
-        tmpOut.toFile().deleteOnExit();
-
-        synchronized (this) {
-            if (relocator == null) {
-                relocator = new RelocationHelper(this);
-            }
-        }
-
-        try {
-            relocator.relocate(in, tmpOut, relocations);
-            Files.move(tmpOut, file);
-
-            logger.info("Relocations applied to " + saveDirectory.getParent().relativize(in));
-
-            return file;
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        } finally {
+        synchronized (lockFor(file)) {
+            Path temp = null;
             try {
-                Files.deleteIfExists(tmpOut);
-            } catch (IOException ignored) {
+                if (Files.isRegularFile(file)) {
+                    byte[] recorded = Checksums.readRecorded(file);
+                    if (recorded != null && MessageDigest.isEqual(recorded, Checksums.digest(file, Checksums.SHA_256))) {
+                        return file;
+                    }
+                    logger.warn("Relocated jar " + file + " doesn't match its recorded checksum, relocating it again");
+                    Checksums.deleteWithRecord(file);
+                }
+
+                temp = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".part");
+                helper.relocate(in, temp, library.getRelocations());
+                Checksums.record(file, Checksums.digest(temp, Checksums.SHA_256));
+                ArtifactDownloader.install(temp, file);
+
+                logger.info("Relocations applied to " + saveDirectory.getParent().relativize(in));
+                return file;
+            } catch (IOException e) {
+                throw new UncheckedIOException("Failed to relocate " + library, e);
+            } finally {
+                if (temp != null) {
+                    try {
+                        Files.deleteIfExists(temp);
+                    } catch (IOException e) {
+                        logger.debug("Couldn't delete temporary file " + temp, e);
+                    }
+                }
             }
         }
+    }
+
+    /**
+     * Gets the relocation helper, creating it on first use.
+     *
+     * @return the relocation helper
+     */
+    private RelocationHelper relocator() {
+        RelocationHelper helper = relocator;
+        if (helper == null) {
+            synchronized (relocatorLock) {
+                helper = relocator;
+                if (helper == null) {
+                    helper = new RelocationHelper(this);
+                    relocator = helper;
+                }
+            }
+        }
+
+        return helper;
     }
 
     /**
@@ -520,7 +552,7 @@ public abstract class LibraryManager {
     public void loadLibrary(Library library) {
         Path file = downloadLibrary(requireNonNull(library, "library"));
         if (library.hasRelocations()) {
-            file = relocate(file, library.getRelocatedPath(), library.getRelocations());
+            file = relocate(library, file);
         }
 
         addToClasspath(file);

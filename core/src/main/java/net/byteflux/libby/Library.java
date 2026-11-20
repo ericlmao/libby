@@ -1,8 +1,13 @@
 package net.byteflux.libby;
 
 import net.byteflux.libby.relocation.Relocation;
+import net.byteflux.libby.relocation.RelocationHelper;
+import net.byteflux.libby.transport.Checksums;
 import org.jspecify.annotations.Nullable;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -121,7 +126,7 @@ public class Library {
         }
 
         this.path = path + ".jar";
-        relocatedPath = hasRelocations() ? path + "-relocated.jar" : null;
+        relocatedPath = hasRelocations() ? path + "-relocated-" + relocationFingerprint(this.relocations) + ".jar" : null;
     }
 
     /**
@@ -225,6 +230,10 @@ public class Library {
 
     /**
      * Gets the relative path to this library's relocated jar.
+     * <p>
+     * The file name ends with {@code -relocated-<hash>.jar}, where the hash
+     * covers the relocation rules and the relocation tooling version, so
+     * changing either produces a new relocated jar.
      *
      * @return path to relocated artifact or null if has no relocations
      */
@@ -282,6 +291,33 @@ public class Library {
     @Override
     public int hashCode() {
         return 31 * Objects.hash(groupId, artifactId, version, classifier, urls, relocations) + Arrays.hashCode(checksum);
+    }
+
+    /**
+     * Computes a short fingerprint of relocation rules and the relocation
+     * tooling. Rule order is kept because the first matching rule wins, while
+     * includes and excludes are sorted because their order doesn't matter.
+     *
+     * @param relocations the relocation rules
+     * @return first 8 hexadecimal digits of the SHA-256 fingerprint
+     */
+    private static String relocationFingerprint(Collection<Relocation> relocations) {
+        StringBuilder canonical = new StringBuilder(RelocationHelper.TOOLCHAIN);
+        for (Relocation relocation : relocations) {
+            canonical.append('\n').append(relocation.getPattern())
+                     .append('\0').append(relocation.getRelocatedPattern())
+                     .append('\0').append(String.join("\1", relocation.getIncludes().stream().sorted().toArray(String[]::new)))
+                     .append('\0').append(String.join("\1", relocation.getExcludes().stream().sorted().toArray(String[]::new)));
+        }
+
+        byte[] digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256").digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+
+        return Checksums.toHex(Arrays.copyOf(digest, 4));
     }
 
     /**

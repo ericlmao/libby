@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -106,6 +107,23 @@ public class LibraryTest {
         assertEquals(1, library.getRelocations().size());
         assertThrows(UnsupportedOperationException.class, () -> library.getUrls().add("x"));
         assertThrows(UnsupportedOperationException.class, () -> library.getRelocations().clear());
+    }
+
+    @Test
+    public void relocatedPathDependsOnRules() {
+        Library plain = valid().build();
+        Library relocated = valid().relocate("com{}example", "shaded").build();
+        Library sameRules = valid().relocate(new Relocation("com.example", "shaded")).build();
+        Library otherRules = valid().relocate("com{}example", "other").build();
+        Library reorderedIncludes = valid().relocate(new Relocation("com.example", "shaded", List.of("b", "a"), null)).build();
+        Library sortedIncludes = valid().relocate(new Relocation("com.example", "shaded", List.of("a", "b"), null)).build();
+
+        assertNull(plain.getRelocatedPath());
+        assertNotNull(relocated.getRelocatedPath());
+        assertTrue(relocated.getRelocatedPath().matches("com/example/lib/1\\.0\\.0/lib-1\\.0\\.0-relocated-[0-9a-f]{8}\\.jar"));
+        assertEquals(relocated.getRelocatedPath(), sameRules.getRelocatedPath());
+        assertNotEquals(relocated.getRelocatedPath(), otherRules.getRelocatedPath());
+        assertEquals(sortedIncludes.getRelocatedPath(), reorderedIncludes.getRelocatedPath());
     }
 
     @Test

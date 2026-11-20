@@ -23,7 +23,8 @@ sourceSets.main {
     java.srcDir(generateLibbyProperties.flatMap { it.outputDirectory })
 }
 
-// The jar relocator and ASM jars that RelocationHelper downloads at runtime. The relocation
+// The jar relocator and ASM jars that RelocationHelper downloads at runtime (asm-tree is not
+// needed: jar-relocator only uses the visitor API and asm-commons remappers). The relocation
 // test loads them from a file: repository laid out from this configuration so it runs offline
 // while still exercising the real download, checksum and isolated class loading path.
 val relocatorTestRuntime = configurations.create("relocatorTestRuntime") {
@@ -36,7 +37,6 @@ dependencies {
     relocatorTestRuntime(libs.jar.relocator)
     relocatorTestRuntime(libs.asm)
     relocatorTestRuntime(libs.asm.commons)
-    relocatorTestRuntime(libs.asm.tree)
 }
 
 val relocatorTestRepository = tasks.register<LayoutMavenRepository>("relocatorTestRepository") {
