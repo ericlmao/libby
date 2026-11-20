@@ -188,13 +188,27 @@ Paper's plugin loader API is marked experimental and may change between Paper ve
 ### Velocity
 
 `VelocityLibraryManager` adds jars with Velocity's official
-`PluginManager#addToClasspath`. Create it from your plugin's constructor:
+`PluginManager#addToClasspath`. Velocity only accepts that call once your plugin instance is
+registered, which happens after its constructor returns: calling it from the constructor
+fails with `IllegalArgumentException: plugin is not loaded`. Create the manager and load
+libraries in a `ProxyInitializeEvent` handler instead:
 
 ```java
 @Plugin(id = "myplugin", name = "MyPlugin", version = "1.0.0")
 public final class MyPlugin {
+    private final ProxyServer server;
+    private final Logger logger;
+    private final Path dataDirectory;
+
     @Inject
     public MyPlugin(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
+        this.server = server;
+        this.logger = logger;
+        this.dataDirectory = dataDirectory;
+    }
+
+    @Subscribe
+    public void onProxyInitialization(ProxyInitializeEvent event) {
         VelocityLibraryManager<MyPlugin> libraryManager =
             new VelocityLibraryManager<>(this, logger, dataDirectory, server.getPluginManager());
         libraryManager.addMavenCentral();
@@ -208,8 +222,8 @@ public final class MyPlugin {
 ```
 
 Or let Guice inject it. The manager needs the plugin instance, so inject it into a field
-(not a constructor parameter, which would be a circular dependency) and use it once the
-plugin is constructed:
+(not a constructor parameter, which would be a circular dependency), and load libraries
+in the same event handler:
 
 ```java
 @Plugin(id = "myplugin", name = "MyPlugin", version = "1.0.0")
@@ -224,6 +238,10 @@ public final class MyPlugin {
     }
 }
 ```
+
+Classes from the loaded libraries are only usable after `loadLibrary` returns, so don't
+reference them from the plugin's constructor or fields that are initialized before the
+event.
 
 ### BungeeCord
 

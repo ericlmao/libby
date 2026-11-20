@@ -15,13 +15,19 @@ import static java.util.Objects.requireNonNull;
  * A runtime dependency manager for Velocity plugins.
  * <p>
  * Libraries are added to the plugin's classpath with
- * {@link PluginManager#addToClasspath(Object, Path)}. The manager can be
- * injected by Guice into a field of type {@code VelocityLibraryManager<MyPlugin>}
- * (not a constructor parameter of the plugin, which would be a circular
- * dependency), or created directly:
+ * {@link PluginManager#addToClasspath(Object, Path)}, which Velocity only
+ * accepts once the plugin instance is registered. That happens after the
+ * plugin's constructor returns, so loading libraries from the constructor
+ * fails with {@code IllegalArgumentException: plugin is not loaded}. Load
+ * them in a {@code ProxyInitializeEvent} handler instead.
+ * <p>
+ * The manager can be injected by Guice into a field of type
+ * {@code VelocityLibraryManager<MyPlugin>} (not a constructor parameter of the
+ * plugin, which would be a circular dependency), or created directly in the
+ * event handler:
  * <pre>{@code
- * @Inject
- * public MyPlugin(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
+ * @Subscribe
+ * public void onProxyInitialization(ProxyInitializeEvent event) {
  *     VelocityLibraryManager<MyPlugin> libraryManager =
  *         new VelocityLibraryManager<>(this, logger, dataDirectory, server.getPluginManager());
  *     libraryManager.addMavenCentral();
@@ -32,6 +38,8 @@ import static java.util.Objects.requireNonNull;
  *         .build());
  * }
  * }</pre>
+ * where {@code server}, {@code logger} and {@code dataDirectory} were
+ * injected into the plugin's constructor.
  *
  * @param <T> the plugin's main class
  */
