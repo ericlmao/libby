@@ -16,8 +16,9 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * Libraries are added to the plugin's classpath with
  * {@link PluginManager#addToClasspath(Object, Path)}. The manager can be
- * injected by Guice, for example as a constructor parameter of type
- * {@code VelocityLibraryManager<MyPlugin>}, or created directly:
+ * injected by Guice into a field of type {@code VelocityLibraryManager<MyPlugin>}
+ * (not a constructor parameter of the plugin, which would be a circular
+ * dependency), or created directly:
  * <pre>{@code
  * @Inject
  * public MyPlugin(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
