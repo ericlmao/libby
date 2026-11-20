@@ -43,6 +43,13 @@ public class Library {
     private static final int SHA_256_LENGTH = 32;
 
     /**
+     * Directory inside the save directory that relocated jars are saved to.
+     * A group ID can't start with {@code .}, so no artifact path can start
+     * with this directory and collide with a relocated jar.
+     */
+    private static final String RELOCATED_DIRECTORY = ".relocated";
+
+    /**
      * Direct download URLs for this library
      */
     private final Collection<String> urls;
@@ -91,6 +98,11 @@ public class Library {
      * Relative Maven path to this library's artifact
      */
     private final String path;
+
+    /**
+     * Fingerprint of the relocation rules, or null without relocations
+     */
+    private final @Nullable String relocationFingerprint;
 
     /**
      * Relative path to this library's relocated jar
@@ -142,7 +154,10 @@ public class Library {
         }
 
         this.path = path + ".jar";
-        relocatedPath = hasRelocations() ? path + "-relocated-" + relocationFingerprint(this.relocations) + ".jar" : null;
+        relocationFingerprint = hasRelocations() ? computeRelocationFingerprint(this.relocations) : null;
+        relocatedPath = relocationFingerprint != null
+            ? RELOCATED_DIRECTORY + '/' + path + "-relocated-" + relocationFingerprint + ".jar"
+            : null;
     }
 
     /**
@@ -269,14 +284,26 @@ public class Library {
     /**
      * Gets the relative path to this library's relocated jar.
      * <p>
-     * The file name ends with {@code -relocated-<hash>.jar}, where the hash
-     * covers the relocation rules and the relocation tooling version, so
-     * changing either produces a new relocated jar.
+     * Relocated jars are kept apart from downloaded artifacts in a
+     * {@code .relocated} directory, as
+     * {@code .relocated/<Maven path without .jar>-relocated-<hash>.jar}, where
+     * the hash covers the relocation rules and the relocation tooling
+     * version, so changing either produces a new relocated jar.
      *
      * @return path to relocated artifact or null if has no relocations
      */
     public @Nullable String getRelocatedPath() {
         return relocatedPath;
+    }
+
+    /**
+     * Gets the fingerprint of this library's relocation rules and the
+     * relocation tooling, which is also part of the relocated jar's name.
+     *
+     * @return 8 hexadecimal digits, or null if this library has no relocations
+     */
+    @Nullable String getRelocationFingerprint() {
+        return relocationFingerprint;
     }
 
     /**
@@ -342,7 +369,7 @@ public class Library {
      * @param relocations the relocation rules
      * @return first 8 hexadecimal digits of the SHA-256 fingerprint
      */
-    private static String relocationFingerprint(Collection<Relocation> relocations) {
+    private static String computeRelocationFingerprint(Collection<Relocation> relocations) {
         StringBuilder canonical = new StringBuilder(RelocationHelper.TOOLCHAIN);
         for (Relocation relocation : relocations) {
             canonical.append('\n').append(relocation.getPattern())

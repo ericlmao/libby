@@ -265,9 +265,10 @@ the library directory. Invalid coordinates throw an `IllegalArgumentException` f
 `build()`.
 
 `Relocation.builder()` creates rules with `include(...)`/`exclude(...)` class patterns.
-Relocated jars are saved next to the original as
-`<artifact>-relocated-<hash>.jar`, where the hash covers the rules and the relocation
-tooling, so changing either produces a new jar.
+Relocated jars are saved apart from downloaded artifacts, in a `.relocated` directory inside
+the library directory, as `.relocated/<group path>/<artifact>/<version>/<artifact>-<version>-relocated-<hash>.jar`.
+The hash covers the rules and the relocation tooling, so changing either produces a new jar,
+and a relocated jar is created again whenever the downloaded jar it was made from changes.
 
 ### Computing a checksum
 
@@ -393,7 +394,8 @@ Libby downloads code that will run inside your server, so it is strict by defaul
   download is accepted and a warning is logged.
 - **Verified cache.** Every downloaded file gets its SHA-256 recorded in a `.sha256` sidecar.
   Cached jars, relocated jars and POMs are re-verified on every start and downloaded again
-  if they don't match. Files cached without a sidecar (by older libby versions) are checked
+  if they don't match. A relocated jar's sidecar also records the SHA-256 of the jar it was
+  created from, so it's only reused for that exact input. Files cached without a sidecar (by older libby versions) are checked
   against the repository's checksum files, and downloaded again rather than trusted if those
   can't be fetched.
 - **Safe downloads.** Only HTTP 200 responses are accepted (error pages are never cached),
@@ -485,8 +487,9 @@ adapters.
 - **Sponge module removed.** Use `libby-core` with an `IsolatedClassLoader` or a custom
   `LibraryManager` subclass.
 - **New relocation tooling.** jar-relocator 1.7 and ASM 9.11.1 replace the old versions, so
-  relocated jars are regenerated once under new `-relocated-<hash>.jar` names. Old
-  relocated jars in the library directory can be deleted.
+  relocated jars are regenerated once under new `-relocated-<hash>.jar` names in the
+  library directory's `.relocated` subdirectory. Old relocated jars next to the downloaded
+  jars (`*-relocated*.jar` and their `.sha256` files) are no longer used and can be deleted.
 - **Repositories.** Maven Central now points at `repo.maven.apache.org`. `addJCenter()` and
   `addSonatype()` are deprecated because those services are shut down; use
   `addMavenCentral()` and `addSonatypeSnapshots()`.

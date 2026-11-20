@@ -121,10 +121,23 @@ public class LibraryTest {
 
         assertNull(plain.getRelocatedPath());
         assertNotNull(relocated.getRelocatedPath());
-        assertTrue(relocated.getRelocatedPath().matches("com/example/lib/1\\.0\\.0/lib-1\\.0\\.0-relocated-[0-9a-f]{8}\\.jar"));
+        assertTrue(relocated.getRelocatedPath().matches("\\.relocated/com/example/lib/1\\.0\\.0/lib-1\\.0\\.0-relocated-[0-9a-f]{8}\\.jar"),
+            relocated.getRelocatedPath());
         assertEquals(relocated.getRelocatedPath(), sameRules.getRelocatedPath());
         assertNotEquals(relocated.getRelocatedPath(), otherRules.getRelocatedPath());
         assertEquals(sortedIncludes.getRelocatedPath(), reorderedIncludes.getRelocatedPath());
+    }
+
+    @Test
+    public void relocatedPathCantCollideWithAnArtifactPath() {
+        Library relocated = valid().relocate("com{}example", "shaded").build();
+        String fingerprint = relocated.getRelocationFingerprint();
+        assertNotNull(fingerprint);
+
+        Library sameName = valid().classifier("relocated-" + fingerprint).build();
+        assertNotEquals(relocated.getRelocatedPath(), sameName.getPath());
+        assertTrue(sameName.getPath().endsWith("/lib-1.0.0-relocated-" + fingerprint + ".jar"), sameName.getPath());
+        assertThrows(IllegalArgumentException.class, () -> valid().groupId(".relocated.com.example").build());
     }
 
     @Test

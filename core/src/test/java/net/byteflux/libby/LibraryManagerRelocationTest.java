@@ -2,6 +2,7 @@ package net.byteflux.libby;
 
 import net.byteflux.libby.logging.LogLevel;
 import net.byteflux.libby.relocation.Relocation;
+import net.byteflux.libby.transport.Checksums;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,22 +44,33 @@ public class LibraryManagerRelocationTest {
 
     @BeforeEach
     public void setUp() throws IOException {
-        String relocatorRepository = System.getProperty("libby.test.relocatorRepository");
-        assertNotNull(relocatorRepository, "the build must pass libby.test.relocatorRepository");
+        assertNotNull(System.getProperty("libby.test.relocatorRepository"), "the build must pass libby.test.relocatorRepository");
 
-        byte[] jar = TestJars.compiledJar(work, Map.of(
+        Path artifact = libraryRepository.resolve("com/example/greeter/1.0/greeter-1.0.jar");
+        Files.createDirectories(artifact.getParent());
+        Files.write(artifact, greeterJar("hello"));
+
+        manager = newManager();
+    }
+
+    /**
+     * Creates a manager using the shared data directory, the relocator
+     * repository and the library repository, like a restarted plugin.
+     */
+    private TestLibraryManager newManager() {
+        TestLibraryManager created = TestLibraryManager.create(dataDirectory);
+        created.addRepository(Path.of(System.getProperty("libby.test.relocatorRepository")).toUri().toString());
+        created.addRepository(libraryRepository.toUri().toString());
+        return created;
+    }
+
+    private byte[] greeterJar(String message) throws IOException {
+        return TestJars.compiledJar(Files.createTempDirectory(work, "greeter"), Map.of(
             "com.example.lib.Greeter",
             "package com.example.lib; public class Greeter { public static String greet() { return com.example.lib.internal.Helper.message(); } }",
             "com.example.lib.internal.Helper",
-            "package com.example.lib.internal; public class Helper { public static String message() { return \"hello\"; } }"
+            "package com.example.lib.internal; public class Helper { public static String message() { return \"" + message + "\"; } }"
         ));
-        Path artifact = libraryRepository.resolve("com/example/greeter/1.0/greeter-1.0.jar");
-        Files.createDirectories(artifact.getParent());
-        Files.write(artifact, jar);
-
-        manager = TestLibraryManager.create(dataDirectory);
-        manager.addRepository(Path.of(relocatorRepository).toUri().toString());
-        manager.addRepository(libraryRepository.toUri().toString());
     }
 
     private Library.Builder greeter() {
@@ -79,6 +91,7 @@ public class LibraryManagerRelocationTest {
 
         Path relocated = manager.saveDirectory().resolve(library.getRelocatedPath());
         assertEquals(List.of(relocated), manager.classpath());
+        assertEquals(manager.saveDirectory().resolve(".relocated/com/example/greeter/1.0"), relocated.getParent());
         assertTrue(relocated.getFileName().toString().matches("greeter-1\\.0-relocated-[0-9a-f]{8}\\.jar"), relocated.toString());
         Set<String> entries = entries(relocated);
         assertTrue(entries.contains("shaded/greeter/Greeter.class"), entries.toString());
@@ -103,6 +116,32 @@ public class LibraryManagerRelocationTest {
         manager.loadLibrary(greeter().relocate(new Relocation("com.example.lib", "shaded.greeter")).build());
 
         assertEquals(1, manager.log().count(LogLevel.INFO, "Relocations applied"));
+    }
+
+    @Test
+    public void relocatesAgainWhenTheDownloadedJarChanges() throws Exception {
+        Library library = greeter().relocate("com{}example{}lib", "shaded{}greeter").build();
+        manager.loadLibrary(library);
+
+        // The cached jar is replaced, for example downloaded again after it failed its
+        // recorded checksum, and the new download has different contents.
+        Files.write(libraryRepository.resolve("com/example/greeter/1.0/greeter-1.0.jar"), greeterJar("updated"));
+        Checksums.deleteWithRecord(manager.saveDirectory().resolve(library.getPath()));
+
+        TestLibraryManager restarted = newManager();
+        restarted.loadLibrary(library);
+
+        assertEquals(1, restarted.log().count(LogLevel.INFO, "Relocations applied"));
+        assertEquals(1, restarted.log().count(LogLevel.DEBUG, "wasn't created from the current greeter-1.0.jar"));
+        Path relocated = restarted.saveDirectory().resolve(library.getRelocatedPath());
+        try (URLClassLoader loader = new URLClassLoader(new URL[] {relocated.toUri().toURL()}, null)) {
+            assertEquals("updated", loader.loadClass("shaded.greeter.Greeter").getMethod("greet").invoke(null));
+        }
+
+        // Unchanged input: the relocated jar is reused.
+        TestLibraryManager again = newManager();
+        again.loadLibrary(library);
+        assertEquals(0, again.log().count(LogLevel.INFO, "Relocations applied"));
     }
 
     @Test

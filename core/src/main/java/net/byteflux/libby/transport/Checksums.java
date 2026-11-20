@@ -151,6 +151,39 @@ public final class Checksums {
     }
 
     /**
+     * Records the SHA-256 checksum of a file generated from another file,
+     * together with the SHA-256 checksum of that source, in the file's
+     * sidecar. The source checksum is the sidecar's second line, so
+     * {@link #readRecorded(Path)} still reads the file's own checksum.
+     *
+     * @param file   the generated file
+     * @param sha256 the generated file's SHA-256 checksum
+     * @param source the SHA-256 checksum of the file it was generated from
+     * @throws IOException if the sidecar file can't be written
+     */
+    public static void record(Path file, byte[] sha256, byte[] source) throws IOException {
+        Files.write(recordedChecksumFile(file), (toHex(sha256) + '\n' + toHex(source) + '\n').getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * Reads the recorded SHA-256 checksum of the source a file was generated
+     * from, as recorded by {@link #record(Path, byte[], byte[])}.
+     *
+     * @param file the generated file
+     * @return the recorded source checksum, or null if none is recorded or the sidecar is malformed
+     * @throws IOException if the sidecar file exists but can't be read
+     */
+    public static byte @Nullable [] readRecordedSource(Path file) throws IOException {
+        String sidecar = readSidecar(file);
+        if (sidecar == null) {
+            return null;
+        }
+
+        String[] lines = sidecar.strip().split("\\R");
+        return lines.length == 2 ? parseHex(lines[1], SHA_256_LENGTH) : null;
+    }
+
+    /**
      * Reads the recorded SHA-256 checksum of a file.
      *
      * @param file the file
@@ -158,12 +191,24 @@ public final class Checksums {
      * @throws IOException if the sidecar file exists but can't be read
      */
     public static byte @Nullable [] readRecorded(Path file) throws IOException {
+        String sidecar = readSidecar(file);
+        return sidecar != null ? parseHex(sidecar, SHA_256_LENGTH) : null;
+    }
+
+    /**
+     * Reads the sidecar file of a file.
+     *
+     * @param file the file
+     * @return the sidecar's contents, or null if it doesn't exist or is too large
+     * @throws IOException if the sidecar file exists but can't be read
+     */
+    private static @Nullable String readSidecar(Path file) throws IOException {
         Path sidecar = recordedChecksumFile(file);
         if (!Files.isRegularFile(sidecar) || Files.size(sidecar) > 1024) {
             return null;
         }
 
-        return parseHex(new String(Files.readAllBytes(sidecar), StandardCharsets.US_ASCII), SHA_256_LENGTH);
+        return new String(Files.readAllBytes(sidecar), StandardCharsets.US_ASCII);
     }
 
     /**

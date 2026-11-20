@@ -520,8 +520,9 @@ public abstract class LibraryManager {
 
     /**
      * Applies a library's relocation rules to its downloaded jar, unless a
-     * relocated jar with a matching recorded checksum already exists, and
-     * returns the path to the relocated jar.
+     * relocated jar with a matching recorded checksum that was created from
+     * the same downloaded jar already exists, and returns the path to the
+     * relocated jar.
      *
      * @param library the library being loaded
      * @param in      the library's downloaded jar
@@ -536,34 +537,57 @@ public abstract class LibraryManager {
         // own dependencies under their file locks.
         RelocationHelper helper = relocator();
 
-        synchronized (lockFor(file)) {
-            Path temp = null;
-            try {
-                if (Files.isRegularFile(file)) {
-                    byte[] recorded = Checksums.readRecorded(file);
-                    if (recorded != null && MessageDigest.isEqual(recorded, Checksums.digest(file, Checksums.SHA_256))) {
-                        return file;
-                    }
+        // Lock the input first so it can't be downloaded again while it's relocated.
+        synchronized (lockFor(in)) {
+            synchronized (lockFor(file)) {
+                return relocateLocked(library, in, file, helper);
+            }
+        }
+    }
+
+    /**
+     * Applies a library's relocation rules while holding the locks of the
+     * downloaded jar and the relocated jar.
+     *
+     * @param library the library being loaded
+     * @param in      the library's downloaded jar
+     * @param file    the relocated jar
+     * @param helper  the relocation helper
+     * @return the relocated file
+     */
+    private Path relocateLocked(Library library, Path in, Path file, RelocationHelper helper) {
+        Path temp = null;
+        try {
+            byte[] source = Checksums.digest(in, Checksums.SHA_256);
+            if (Files.isRegularFile(file)) {
+                byte[] recorded = Checksums.readRecorded(file);
+                byte[] recordedSource = Checksums.readRecordedSource(file);
+                if (recorded == null || !MessageDigest.isEqual(recorded, Checksums.digest(file, Checksums.SHA_256))) {
                     logger.warn("Relocated jar " + file + " doesn't match its recorded checksum, relocating it again");
-                    Checksums.deleteWithRecord(file);
+                } else if (recordedSource == null || !MessageDigest.isEqual(recordedSource, source)) {
+                    logger.debug("Relocated jar " + file + " wasn't created from the current " + in.getFileName() + ", relocating it again");
+                } else {
+                    return file;
                 }
+                Checksums.deleteWithRecord(file);
+            }
 
-                temp = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".part");
-                helper.relocate(in, temp, library.getRelocations());
-                Checksums.record(file, Checksums.digest(temp, Checksums.SHA_256));
-                ArtifactDownloader.install(temp, file);
+            Files.createDirectories(file.getParent());
+            temp = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".part");
+            helper.relocate(in, temp, library.getRelocations());
+            Checksums.record(file, Checksums.digest(temp, Checksums.SHA_256), source);
+            ArtifactDownloader.install(temp, file);
 
-                logger.info("Relocations applied to " + saveDirectory.getParent().relativize(in));
-                return file;
-            } catch (IOException e) {
-                throw new UncheckedIOException("Failed to relocate " + library, e);
-            } finally {
-                if (temp != null) {
-                    try {
-                        Files.deleteIfExists(temp);
-                    } catch (IOException e) {
-                        logger.debug("Couldn't delete temporary file " + temp, e);
-                    }
+            logger.info("Relocations applied to " + saveDirectory.getParent().relativize(in));
+            return file;
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to relocate " + library, e);
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException e) {
+                    logger.debug("Couldn't delete temporary file " + temp, e);
                 }
             }
         }
